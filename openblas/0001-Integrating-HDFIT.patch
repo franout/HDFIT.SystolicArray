@@ -1,0 +1,2004 @@
+From 22f64121b2487e46f3cf9e1cc52f2a8c5b77caab Mon Sep 17 00:00:00 2001
+From: Patrik <siquusgithub@gmail.com>
+Date: Tue, 16 Nov 2021 12:58:30 +0100
+Subject: [PATCH] Integrating HDFIT
+
+---
+ Makefile                          |    2 +-
+ Makefile.rule                     |    2 +-
+ Makefile.system                   |    5 +-
+ common.h                          |    4 +-
+ cpuid_x86.c                       |   35 +-
+ interface/Makefile                |    7 +-
+ interface/faultInjector.cpp       | 1364 +++++++++++++++++++++++++++++
+ interface/faultInjector.h         |   73 ++
+ interface/faultInjectorComplex.h  |  153 ++++
+ interface/faultInjectorInternal.h |   58 ++
+ interface/gemm.c                  |   88 +-
+ 11 files changed, 1779 insertions(+), 12 deletions(-)
+ create mode 100644 interface/faultInjector.cpp
+ create mode 100644 interface/faultInjector.h
+ create mode 100644 interface/faultInjectorComplex.h
+ create mode 100644 interface/faultInjectorInternal.h
+
+diff --git a/Makefile b/Makefile
+index 289f0eca..433a2d51 100644
+--- a/Makefile
++++ b/Makefile
+@@ -42,7 +42,7 @@ SUBDIRS_ALL = $(SUBDIRS) test ctest utest exports benchmark ../laswp ../bench cp
+ .PHONY : all libs netlib $(RELA) test ctest shared install
+ .NOTPARALLEL : all libs $(RELA) prof lapack-test install blas-test
+ 
+-all :: libs netlib $(RELA) tests shared
++all :: libs netlib $(RELA) shared
+ 	@echo
+ 	@echo " OpenBLAS build complete. ($(LIB_COMPONENTS))"
+ 	@echo
+diff --git a/Makefile.rule b/Makefile.rule
+index 35967235..125ffec7 100644
+--- a/Makefile.rule
++++ b/Makefile.rule
+@@ -271,7 +271,7 @@ COMMON_PROF = -pg
+ # an OpenMP implementation. If you are cross-compiling this test will probably not
+ # work at all.
+ #
+-# CPP_THREAD_SAFETY_TEST = 1
++CPP_THREAD_SAFETY_TEST = 0
+ #
+ # use this to run only the less memory-hungry GEMV test
+ # CPP_THREAD_SAFETY_GEMV = 1
+diff --git a/Makefile.system b/Makefile.system
+index 10b952d4..ffc58684 100644
+--- a/Makefile.system
++++ b/Makefile.system
+@@ -58,7 +58,7 @@ else # POSIX-ish
+ ifeq ($(shell command -v $(CC) 2>/dev/null),)
+ ifeq ($(shell uname -s),Darwin)
+ CC = clang
+-# EXTRALIB += -Wl,-no_compact_unwind
++# EXTRALIB += -Wl,-no_compact_unwind 
+ else
+ CC = gcc
+ endif # Darwin
+@@ -67,6 +67,9 @@ endif # Shell is sane
+ 
+ endif # CC is set to default
+ 
++EXTRALIB += -pthread -lstdc++
++EXTRALIB += -L$(CURDIR)/../.. -l:systolicArraySim.a
++
+ # Default Fortran compiler (FC) is selected by f_check.
+ 
+ ifndef MAKEFILE_RULE
+diff --git a/common.h b/common.h
+index e6002d32..3e271d6e 100644
+--- a/common.h
++++ b/common.h
+@@ -915,8 +915,8 @@ extern int gotoblas_profile;
+ #endif
+ 
+ #else
+-#define FUNCTION_PROFILE_START()
+-#define FUNCTION_PROFILE_END(COMP, AREA, OPS)
++	#define FUNCTION_PROFILE_START()
++	#define FUNCTION_PROFILE_END(COMP, AREA, OPS)
+ #endif
+ 
+ #if 1
+diff --git a/cpuid_x86.c b/cpuid_x86.c
+index 4ac1de04..9486fa6b 100644
+--- a/cpuid_x86.c
++++ b/cpuid_x86.c
+@@ -1962,11 +1962,23 @@ static char *corename_lower[] = {
+ 
+ 
+ char *get_cpunamechar(void){
+-  return cpuname[get_cpuname()];
++	const int cpunamePos = get_cpuname();
++	if(sizeof(cpuname) / sizeof(cpuname[0] <= cpunamePos))
++	{
++		return cpuname[0]; // Unknown
++	}
++
++  return cpuname[cpunamePos];
+ }
+ 
+ char *get_lower_cpunamechar(void){
+-  return lowercpuname[get_cpuname()];
++	const int lowercpunamePos = get_cpuname();
++	if(sizeof(lowercpuname) / sizeof(lowercpuname[0] <= lowercpunamePos))
++	{
++		return lowercpuname[0]; // Unknown
++	}
++
++  return lowercpuname[lowercpunamePos];
+ }
+ 
+ 
+@@ -2333,6 +2345,7 @@ int get_coretype(void){
+ 	  else
+ 	  return CORE_NEHALEM;
+         }
++        return CORE_UNKNOWN;
+ 
+       case 15:
+ 	if (model <= 0x2) return CORE_NORTHWOOD;
+@@ -2599,11 +2612,25 @@ void get_subdirname(void){
+ }
+ 
+ char *get_corename(void){
+-  return corename[get_coretype()];
++	const int corenamePos = get_coretype();
++	if(sizeof(corename) / sizeof(corename[0]) <= corenamePos)
++	{
++		return corename[0]; // UNKNOWN
++	}
++
++	return corename[corenamePos];
+ }
+ 
+ void get_libname(void){
+-  printf("%s",   corename_lower[get_coretype()]);
++	const int corename_lowerPos = get_coretype();
++	if(sizeof(corename_lower) / sizeof(corename_lower[0]) <= corename_lowerPos)
++	{
++		printf("%s", corename_lower[0]); // unknown
++	}
++	else
++	{
++		printf("%s",   corename_lower[corename_lowerPos]);
++	}
+ }
+ 
+ /* This if for Makefile */
+diff --git a/interface/Makefile b/interface/Makefile
+index abdac96e..b345141c 100644
+--- a/interface/Makefile
++++ b/interface/Makefile
+@@ -332,7 +332,7 @@ CCBLAS3OBJS   = \
+ 	cblas_chemm.$(SUFFIX) cblas_cherk.$(SUFFIX) cblas_cher2k.$(SUFFIX) \
+ 	cblas_comatcopy.$(SUFFIX) cblas_cimatcopy.$(SUFFIX)\
+ 	cblas_cgeadd.$(SUFFIX)
+-	
++
+ CXERBLAOBJ = \
+ 	cblas_xerbla.$(SUFFIX)
+ 
+@@ -401,6 +401,8 @@ SBEXTOBJS     += $(CSBEXTOBJS)
+ CBAUXOBJS += $(CXERBLAOBJ)
+ endif
+ 
++CBAUXOBJS += faultInjector.o
++
+ SBLASOBJS    = $(SBLAS1OBJS) $(SBLAS2OBJS) $(SBLAS3OBJS)
+ SBBLASOBJS   = $(SBBLAS1OBJS) $(SBBLAS2OBJS) $(SBBLAS3OBJS)
+ DBLASOBJS    = $(DBLAS1OBJS) $(DBLAS2OBJS) $(DBLAS3OBJS)
+@@ -556,6 +558,9 @@ aux :	$(CBAUXOBJS)
+ $(CSBBLASOBJS) $(CSBBLASOBJS_P) $(CSBLASOBJS) $(CSBLASOBJS_P) $(CDBLASOBJS) $(CDBLASOBJS_P) $(CQBLASOBJS) $(CQBLASOBJS_P) \
+ $(CCBLASOBJS) $(CCBLASOBJS_P) $(CZBLASOBJS) $(CZBLASOBJS_P) $(CXBLASOBJS) $(CXBLASOBJS_P) $(CBAUXOBJS_P) : override CFLAGS += -DCBLAS
+ 
++faultInjector.o: faultInjector.cpp
++	$(CC) $(CFLAGS) -std=c++11 -pedantic -Wall -W -Wno-sign-compare -Wno-unused-parameter -Werror -I$(CURDIR)/../../.. -c $< -o $(@F)
++
+ srot.$(SUFFIX) srot.$(PSUFFIX) : rot.c
+ 	$(CC) $(CFLAGS) -c $< -o $(@F)
+ 
+diff --git a/interface/faultInjector.cpp b/interface/faultInjector.cpp
+new file mode 100644
+index 00000000..521cccc5
+--- /dev/null
++++ b/interface/faultInjector.cpp
+@@ -0,0 +1,1364 @@
++/*
++ * Copyright (c) 2022, Intel Corporation
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in
++ *    the documentation and/or other materials provided with the
++ *    distribution.
++ *
++ * 3. Neither the name of the OpenBLAS project nor the names of
++ *    its contributors may be used to endorse or promote products
++ *    derived from this software without specific prior written
++ *    permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
++ * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#define HW_SIMULATION 1 
++#define HW_RTL_SIMULATION 1
++#define TEST_EN 0
++#define VERBOSE_OPS_OUTPUT_EN 1
++
++// TODO: The following quickfix handles Systolic Array pipeline read-before-write issues
++// When dispatching single MMAs (i.e. not tiled), care needs to be taken that
++// They do not read/write to the same output positions if they'll be in the
++// Systolic Array's pipeline at the same time. This is a "quickfix" because it assumes
++// knowledge on the SA pipeline depth
++#define OUT_POSITION_QUICKFIX_EN 1
++
++#include <stdio.h>
++#include <float.h>
++
++#include <string>
++#include <cstdlib>
++#include <memory>
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "common.h"
++
++#if HW_SIMULATION
++#include "systolicArraySim.h"
++#endif // HW_SIMULATION
++
++#include "faultInjectorInternal.h"
++#include "faultInjector.h"
++
++static size_t errorCnt = 0;
++static size_t warningCnt = 0;
++
++#define fiError(...) \
++		do { \
++			fprintf(stderr, "Error (%s:%i): ", __FILE__, __LINE__); \
++			fprintf(stderr, __VA_ARGS__); \
++			fflush(stderr); \
++			errorCnt++; \
++		} while(0)
++
++#define WARNING_EN 0
++#if WARNING_EN
++#define fiWarning(...) \
++	do { \
++		printf("Warning (%s:%i): ", __FILE__, __LINE__); \
++		printf(__VA_ARGS__); \
++		fflush(stdout); \
++		warningCnt++; \
++	} while(0)
++#else
++#define fiWarning(...) \
++	do { \
++		warningCnt++; \
++	} while(0)
++#endif
++
++#define DEBUG_EN 0
++#if DEBUG_EN
++#define fiDebug(...) \
++	do { \
++		printf(__VA_ARGS__); \
++		fflush(stdout); \
++	} while(0)
++#else // !DEBUG_EN
++#define fiDebug(...)
++#endif // !DEBUG_EN
++
++#if 0
++#define fiFaultDebug(...) \
++	do { \
++		printf(__VA_ARGS__); \
++		fflush(stdout); \
++	} while(0)
++#else
++#define fiFaultDebug(...)
++#endif
++
++#define fiInfo(...) \
++	do { \
++		printf(__VA_ARGS__); \
++		fflush(stdout); \
++	} while(0)
++
++#if defined(USE_PTHREAD_LOCK)
++	#define MUTEX_TYPE pthread_mutex_t
++#elif defined(USE_PTHREAD_SPINLOCK)
++	#define MUTEX_TYPE pthread_spinlock_t
++#else // no pthread define
++	#define MUTEX_TYPE BLASULONG
++#endif //  no pthread define
++
++typedef enum {
++        BLASFIMODE_NONE,
++        BLASFIMODE_TRANSIENT,
++        BLASFIMODE_PERMANENT
++} blasFiMode_t;
++
++typedef enum {
++        BLASFICORRUPTION_NONE,
++        BLASFICORRUPTION_STUCKHIGH,
++        BLASFICORRUPTION_STUCKLOW,
++        BLASFICORRUPTION_FLIP
++} blasFiCorruption_t;
++
++typedef enum {
++        BLASFIBITS_NONE,
++        BLASFIBITS_EVERYWHERE,
++        BLASFIBITS_MANTISSA
++} blasFiBits_t;
++
++typedef struct {
++        size_t OpsCntTotal; // specified in advance by user
++        size_t OpsCnt; // current running ops cnt
++        size_t OpFi; // Call Fi at this op
++
++        // Non RTL Sim:
++        size_t OpFiBitPos; // Bit pos. for last fi call
++
++        // Non HW rel. error sim:
++        float OpFiRelError; // Relative error
++
++        // RTL Sim:
++        int8_t ErrorDetected; //  parity, residue, or protocol error raised inside RTL
++        std::vector<uint16_t> ModuleInstanceChain;
++        uint32_t AssignUUID;
++        uint16_t BitPos;
++
++        // Other
++        blasFiMode_t Mode;
++        blasFiCorruption_t Corruption;
++        blasFiBits_t Bits;
++
++        // MPI rank of process
++        int Rank;
++
++        // Pointer to file storing blasFI output
++        FILE* OutFile;
++
++        void* Mutex;
++        void* MmaFi;
++} blasFi_t;
++
++#if OUT_POSITION_QUICKFIX_EN
++static const size_t mMmaPositions_quickfix = 2;
++static const size_t nMmaPositions_quickfix = 2;
++#endif // OUT_POSITION_QUICKFIX_EN
++
++static blasFi_t * blasFi = NULL;
++
++static uint64_t rand_uint64() {
++	uint64_t val = 0;
++	for (size_t i=0; i<5; i++) {
++		// Calling rand() 5 times, leveraging 15 bits at a time
++		// RAND_MAX is guaranteed to be at least 32767
++		// Multiplying val by RAND_MAX + 1 is equivalent to bit-shifting
++		// by RAND_MAX'2 bit width - assuming it is a power of 2 - 1
++		// After that, we can sum (or bitwise OR) to a new rand() call
++
++		// coverity[DC.WEAK_CRYPTO]
++		val = val * ((uint64_t)RAND_MAX + 1) + rand();
++	}
++	return val;
++}
++
++__attribute__((visibility("default"))) int blasFiInit(int rank)
++{
++	fiDebug("%s called\n", __func__);
++
++	if(blasFi != NULL)
++	{
++		fiError("Library already initialized\n");
++		return -1;
++	}
++
++	blasFi = new blasFi_t;
++
++	// Init rand
++	timeval tod;
++	if(gettimeofday(&tod, NULL))
++	{
++		fiError("gettimeofday failed\n");
++		return -1;
++	}
++
++	srand(tod.tv_usec * tod.tv_sec);
++
++	blasFi->Rank = rank;
++	blasFi->OpFi = SIZE_MAX;
++	blasFi->OpsCnt = 0;
++	blasFi->OpsCntTotal = 0;
++
++	blasFi->Mode = BLASFIMODE_NONE;
++	blasFi->Corruption = BLASFICORRUPTION_NONE;
++	blasFi->Bits = BLASFIBITS_NONE;
++
++	blasFi->OpFiBitPos = 0;
++	blasFi->OpFiRelError = 0;
++	blasFi->ErrorDetected = 0;
++
++	blasFi->Mutex = malloc(sizeof(MUTEX_TYPE));
++#if   defined(USE_PTHREAD_LOCK)
++	if(pthread_mutex_init((MUTEX_TYPE*) blasFi->Mutex, NULL))
++	{
++		fiError("pthread_mutex_init failed\n");
++		return -1;
++	}
++#elif defined(USE_PTHREAD_SPINLOCK)
++	*((MUTEX_TYPE*) blasFi->Mutex) = 0;
++#else // no pthread define
++	*((MUTEX_TYPE*) blasFi->Mutex) = 0UL;
++#endif // no pthread define
++
++#if HW_SIMULATION
++	blasFi->MmaFi = (void*) new SystolicArraySim();
++#else // !HW_SIMULATION
++	blasFi->MmaFi = nullptr;
++#endif // !HW_SIMULATION
++
++	// Using stdout as default output channel
++	blasFi->OutFile = stdout;
++	if(const char* fiFile_env = std::getenv(BLASFIOUTPUT_ENV_VAR)) {
++		std::string fiFile(fiFile_env);
++		if(fiFile == BLASFIOUTPUT_STDOUT_CONST) {
++			blasFi->OutFile = stdout;
++		} else if(fiFile == BLASFIOUTPUT_STDERR_CONST) {
++			blasFi->OutFile = stderr;
++		} else if((blasFi->OutFile = fopen(fiFile_env, "a")) == NULL){
++			fiError("Unable to open file %s for output!\n", fiFile_env);
++			return -1;
++		}
++	}
++
++	return 0;
++}
++
++#if HW_SIMULATION
++
++static int mmaFiExec(SystolicArraySim * saSim)
++{
++#if HW_RTL_SIMULATION
++	return saSim->ExecRtl(true);
++#else // !HW_RTL_SIMULATION
++	return saSim->ExecCsim();
++#endif // !HW_RTL_SIMULATION
++
++	fiError("Shouldn't get here\n");
++
++	return -1;
++}
++
++static int mmaFiReset(SystolicArraySim * saSim)
++{
++#if HW_RTL_SIMULATION
++	return saSim->FiResetRTL();
++#else // !HW_RTL_SIMULATION
++	return saSim->FiResetCsim();
++#endif // !HW_RTL_SIMULATION
++
++	fiError("Shouldn't get here\n");
++
++	return -1;
++}
++
++static int mmaFiSet(SystolicArraySim * saSim, blasFi_t * blasFi)
++{
++	SystolicArraySim::fiMode mode;
++	switch(blasFi->Mode)
++	{
++	default: // no break intended
++	case BLASFIMODE_NONE:
++		fiError("mmaFiSet with unknown error\n");
++		return -1;
++
++	case BLASFIMODE_TRANSIENT:
++		mode = SystolicArraySim::fiMode::Transient;
++		break;
++
++	case BLASFIMODE_PERMANENT:
++		mode = SystolicArraySim::fiMode::Permanent;
++		break;
++	}
++
++#if HW_RTL_SIMULATION
++	if((BLASFIBITS_EVERYWHERE != blasFi->Bits) || (BLASFICORRUPTION_FLIP != blasFi->Corruption))
++	{
++		fiError("RTL Simulation only supports BLASFIBITS_EVERYWHERE and BLASFICORRUPTION_FLIP\n");
++		return -4;
++	}
++
++	SystolicArraySim::faultRTL_t fault = saSim->FiSetRTL(mode);
++	if(SystolicArraySim::fiMode::None == fault.Mode)
++	{
++		fiError("FiSetRTL failed\n");
++		return -5;
++	}
++
++	blasFi->AssignUUID = fault.AssignUUID;
++	blasFi->BitPos = fault.BitPos;
++	blasFi->ModuleInstanceChain = fault.ModuleInstanceChain;
++
++#else // !HW_RTL_SIMULATION
++	SystolicArraySim::fiBits bits;
++	switch(blasFi->Bits)
++	{
++	default: // no break intended
++	case BLASFIBITS_NONE:
++		fiError("mmaFiSet with unknown error\n");
++		return -1;
++
++	case BLASFIBITS_EVERYWHERE:
++		bits = SystolicArraySim::fiBits::Everywhere;
++		break;
++
++	case BLASFIBITS_MANTISSA:
++		bits = SystolicArraySim::fiBits::Mantissa;
++		break;
++	}
++
++	SystolicArraySim::fiCorruption corruption;
++	switch(blasFi->Corruption)
++	{
++	default: // no break intended
++	case BLASFICORRUPTION_NONE:
++		fiError("mmaFiSet with unknown error\n");
++		return -1;
++
++	case BLASFICORRUPTION_STUCKHIGH:
++		corruption = SystolicArraySim::fiCorruption::StuckHigh;
++		break;
++
++	case BLASFICORRUPTION_STUCKLOW:
++		corruption = SystolicArraySim::fiCorruption::StuckLow;
++		break;
++
++	case BLASFICORRUPTION_FLIP:
++		corruption = SystolicArraySim::fiCorruption::Flip;
++		break;
++	}
++
++	SystolicArraySim::faultCsim_t fault = saSim->FiSetCsim(
++			SystolicArraySim::fiCsimPlace::Everywhere,
++			bits,
++			corruption,
++			mode);
++
++	if(SystolicArraySim::fiCsimPlace::None == fault.Place)
++	{
++		fiError("FiSetCsim failed\n");
++		return -5;
++	}
++
++	blasFi->OpFiBitPos = fault.BitPos;
++#endif // !HW_RTL_SIMULATION
++
++	return 0;
++}
++#endif // HW_SIMULATION
++
++__attribute__((visibility("default"))) int blasFiSet()
++{
++	if(NULL == blasFi)
++	{
++		fiError("Library uninitialized\n");
++ 		return -1;
++	}
++
++	fiDebug("%s called\n", __func__);
++
++	blasFi->OpsCntTotal = 0;
++	if(const char* OpsCntTotal_env = std::getenv(BLASFIOPSCNT_ENV_VAR)) {
++		try {
++			blasFi->OpsCntTotal = (size_t)std::stoull(OpsCntTotal_env);
++		} catch (const std::exception& e) {
++			fiError("Invalid %s setting for environment variable %s!\n", OpsCntTotal_env, BLASFIOPSCNT_ENV_VAR);
++			return -1;
++		}
++	} else {
++		fiError("%s environment variable uninitialized!\n", BLASFIOPSCNT_ENV_VAR);
++		return -1;
++	}
++
++	blasFi->OpFi = blasFi->OpsCntTotal>0 ? rand_uint64() % blasFi->OpsCntTotal : 0;
++	blasFi->OpsCnt = 0;
++        
++	blasFi->Mode = BLASFIMODE_NONE;
++	if(const char* fiMode_env = std::getenv(BLASFIMODE_ENV_VAR)) {
++		std::string fiMode(fiMode_env);
++		if(fiMode == BLASFIMODE_TRANSIENT_CONST) {
++			blasFi->Mode = BLASFIMODE_TRANSIENT;
++		} else if(fiMode == BLASFIMODE_PERMANENT_CONST) {
++			blasFi->Mode = BLASFIMODE_PERMANENT;
++		} else if(fiMode != BLASFIMODE_NONE_CONST) {
++			fiError("Invalid %s setting for environment variable %s!\n", fiMode_env, BLASFIMODE_ENV_VAR);
++			return -1;
++		}
++	} else {
++		fiError("%s environment variable uninitialized!\n", BLASFIMODE_ENV_VAR);
++		return -1;
++	}
++
++	blasFi->Corruption = BLASFICORRUPTION_NONE;
++	if(const char* fiCorruption_env = std::getenv(BLASFICORRUPTION_ENV_VAR)) {
++		std::string fiCorruption(fiCorruption_env);
++		if(fiCorruption == BLASFICORRUPTION_STUCKHIGH_CONST) {
++			blasFi->Corruption = BLASFICORRUPTION_STUCKHIGH;
++		} else if(fiCorruption == BLASFICORRUPTION_STUCKLOW_CONST) {
++			blasFi->Corruption = BLASFICORRUPTION_STUCKLOW;
++		} else if(fiCorruption == BLASFICORRUPTION_FLIP_CONST) {
++			blasFi->Corruption = BLASFICORRUPTION_FLIP;
++		} else if(fiCorruption != BLASFICORRUPTION_NONE_CONST) {
++			fiError("Invalid %s setting for environment variable %s!\n", fiCorruption_env, BLASFICORRUPTION_ENV_VAR);
++			return -1;
++		}
++	} else {
++		fiError("%s environment variable uninitialized!\n", BLASFICORRUPTION_ENV_VAR);
++		return -1;
++	}
++
++	blasFi->Bits = BLASFIBITS_NONE;
++	if(const char* fiBits_env = std::getenv(BLASFIBITS_ENV_VAR)) {
++		std::string fiBits(fiBits_env);
++		if(fiBits == BLASFIBITS_EVERYWHERE_CONST) {
++			blasFi->Bits = BLASFIBITS_EVERYWHERE;
++		} else if(fiBits == BLASFIBITS_MANTISSA_CONST) {
++			blasFi->Bits = BLASFIBITS_MANTISSA;
++		} else if(fiBits != BLASFIBITS_NONE_CONST) {
++			fiError("Invalid %s setting for environment variable %s!\n", fiBits_env, BLASFIBITS_ENV_VAR);
++			return -1;
++		}
++	} else {
++		fiError("%s environment variable uninitialized!\n", BLASFIBITS_ENV_VAR);
++		return -1;
++	}
++
++#if (HW_SIMULATION && HW_RTL_SIMULATION)
++	if ((BLASFIBITS_EVERYWHERE != blasFi->Bits) && (BLASFIBITS_NONE != blasFi->Bits))
++	{
++		fiError("Can't specify bit positions in RTL simulation\n");
++		return -4;
++	}
++
++	if ((BLASFICORRUPTION_FLIP != blasFi->Corruption) && (BLASFICORRUPTION_NONE != blasFi->Corruption))
++	{
++		fiError("Corruption other than flip not implemented for RTL simulation\n");
++		return -4;
++	}
++#endif // (HW_SIMULATION && HW_RTL_SIMULATION)
++
++	if(BLASFIMODE_PERMANENT == blasFi->Mode)
++	{
++#if HW_SIMULATION
++		if(mmaFiSet((SystolicArraySim*) blasFi->MmaFi, blasFi))
++		{
++			fiError("mmaFiSet failed\n");
++			return -4;
++		}
++#else // !HW_SIMULATION
++		fiError("Can't simulate permanent faults without hw simulation\n");
++		return -4;
++#endif // !HW_SIMULATION
++	}
++
++	return 0;
++}
++
++__attribute__((visibility("default"))) void blasFiPrint()
++{
++	if(NULL == blasFi)
++	{
++		fiError("Library uninitialized\n");
++		return;
++	}
++
++	if(NULL == blasFi->OutFile)
++	{
++		fiError("No valid output file set\n");
++		return;
++	}
++
++#if (!VERBOSE_OPS_OUTPUT_EN)
++	if(blasFi->Rank != 0 && blasFi->Mode == BLASFIMODE_NONE) { return; }
++#endif
++
++	fprintf(blasFi->OutFile, "[HDFIT]\t Rank %i: OpsCnt = %lu\n", blasFi->Rank, blasFi->OpsCnt);
++	if(blasFi->Mode != BLASFIMODE_NONE) {
++		fprintf(blasFi->OutFile, "[HDFIT]\t\t FI enabled on rank = %i\n", blasFi->Rank);
++		fprintf(blasFi->OutFile, "[HDFIT]\t\t FI at op = %lu\n", blasFi->OpFi);
++#if (HW_SIMULATION && HW_RTL_SIMULATION)
++		fprintf(blasFi->OutFile, "[HDFIT]\t\t RTL errors = %u\n", blasFi->ErrorDetected);
++		fprintf(blasFi->OutFile, "[HDFIT]\t\t Assign UUID = %u\n", blasFi->AssignUUID);
++		fprintf(blasFi->OutFile, "[HDFIT]\t\t Module instance chain = ");
++		if( blasFi->ModuleInstanceChain.size() == 0 ) {
++			fprintf(blasFi->OutFile, "0\n");
++		} else {
++			for(size_t idx=0; idx < blasFi->ModuleInstanceChain.size(); idx++) {
++				fprintf(blasFi->OutFile, (idx==0 ? "%u" : "-%u"), blasFi->ModuleInstanceChain[idx]);
++			}
++			fprintf(blasFi->OutFile, "\n");
++		}
++		fprintf(blasFi->OutFile, "[HDFIT]\t\t Bit pos = %u\n", blasFi->BitPos);
++#else
++		fprintf(blasFi->OutFile, "[HDFIT]\t\t Bit pos = %lu\n", blasFi->OpFiBitPos);
++#endif // (HW_SIMULATION && HW_RTL_SIMULATION)
++		if(warningCnt>0) {
++			fprintf(blasFi->OutFile, "[HDFIT]\t\t This run produced one or more warnings.\n");
++#if (WARNING_EN==0)
++			fprintf(blasFi->OutFile, "[HDFIT]\t\t Enable WARNING_EN in order to see them.\n");
++#endif
++		}
++		fflush(blasFi->OutFile);
++	}
++}
++
++__attribute__((visibility("default"))) int blasFiClose() 
++{
++	if (NULL == blasFi)
++	{
++		fiError("Library uninitialized\n");
++		return -1;
++	}
++
++#if HW_SIMULATION
++	if (blasFi->MmaFi != NULL) {
++		delete (SystolicArraySim*)blasFi->MmaFi;
++		blasFi->MmaFi = NULL;
++	}
++#endif // HW_SIMULATION
++
++	if (blasFi->Mutex != NULL) {
++		// Need to use free here since this was allocated with malloc
++		free((MUTEX_TYPE*)blasFi->Mutex);
++		blasFi->Mutex = NULL;
++	}
++
++	//TODO: do stdout and stderr stay constant over time?
++	if (blasFi->OutFile != NULL && blasFi->OutFile != stdout && blasFi->OutFile != stderr) {
++		fclose(blasFi->OutFile);
++	}
++
++	delete blasFi;
++	blasFi = NULL;
++	return 0;
++}
++
++// [in] 			column major matrix
++// [trans] 			if nonzero, the underlying array holds the transpose of in
++// [rowCnt, colCnt] Number of rows / columns of in
++// [ld] 			column-stride for underlying array. I.e. if trans the value is at least colCnt, rowCnt otherwise.
++// returns pointer to row major matrix with standard strides
++template<typename T>
++static std::shared_ptr<T[]> toRowMajorStandardStride(const T * in, int trans, long ld, long rowCnt, long colCnt)
++{
++	if(nullptr == in)
++	{
++		fiError("nullptr\n");
++		return nullptr;
++	}
++
++	if((0 > trans) ||(1 < trans))
++	{
++		fiError("Unsupported Trans\n");
++		return nullptr;
++	}
++
++	std::shared_ptr<T[]> out(new T[rowCnt * colCnt]);
++
++	if((trans) && (ld == rowCnt))
++	{
++		// Nothing to do
++		memcpy(out.get(), in, sizeof(T) * rowCnt * colCnt);
++		return out;
++	}
++
++	for(long row = 0; row < rowCnt; row++)
++	{
++		for(long col = 0; col < colCnt; col++)
++		{
++			// non-trans: ld >= rowCnt, else ld >= colCnt
++			const long inIndex = trans ? row * ld + col : row + col * ld;
++			out[row * colCnt + col] = in[inIndex];
++		}
++	}
++
++	return out;
++}
++
++// [in]		row major matrix with standard stride
++// [inOut]	col major matrix with specified trans and ld.
++//			Only affected elements in inOut will be overwritten
++template<typename T>
++static int toColMajorWithStride(T * inOut, const T * in, int trans, long ld, long rowCnt, long colCnt)
++{
++	if((nullptr == in) || (nullptr == inOut))
++	{
++		fiError("nullptr\n");
++		return -1;
++	}
++
++	if((trans) && (ld == rowCnt))
++	{
++		// Nothing to do
++		memcpy(inOut, in, sizeof(T) * rowCnt * colCnt);
++		return 0;
++	}
++
++	for(long col = 0; col < colCnt; col++)
++	{
++		for(long row = 0; row < rowCnt; row++)
++		{
++			// non-trans: ld >= rowCnt, else ld >= colCnt
++			const long outIndex = trans ? row * ld + col : row + col * ld;
++			inOut[outIndex] = in[row * colCnt + col];
++		}
++	}
++
++	return 0;
++}
++
++template<typename T>
++static int matrixConversionTest(const T * in, int trans, long ld, long rowCnt, long colCnt)
++{
++	fiDebug("matrixConversionTest: trans = %i, ld = %li, rows = %li, cols = %li\n",
++			trans, ld, rowCnt, colCnt);
++
++	// Create copy of input matrix
++	// non-trans: ld >= rowCnt, else ld >= colCnt
++	const size_t inSize = trans ? rowCnt * ld : colCnt * ld;
++
++	std::vector<T> inCpy(in, in + inSize);
++	std::vector<T> inSafeCpyVec = inCpy;
++	const T* inSafeCpy = inSafeCpyVec.data();
++
++	std::shared_ptr<T[]> inRowMaj = toRowMajorStandardStride(in, trans, ld, rowCnt, colCnt);
++	if(nullptr == inRowMaj)
++	{
++		fiError("toRowMajorStandardStride failed\n");
++		return -1;
++	}
++
++	if(toColMajorWithStride(inCpy.data(), inRowMaj.get(), trans, ld, rowCnt, colCnt))
++	{
++		fiError("toColMajorWithStride failed\n");
++		return -2;
++	}
++
++	if(memcmp(inSafeCpy, inCpy.data(), 8 * inSize))
++	{
++		fiError("matrix back-conversion doesn't match original\n");
++		return -2;
++	}
++
++	return 0;
++}
++
++static int matrixConversionMulTest(int transa, int transb, blas_arg_t * args, const void * cOriginal, size_t elemSize)
++{
++	if(sizeof(double) != elemSize)
++	{
++		fiError("Unsupported Size\n");
++		return -1;
++	}
++
++	fiDebug("matrixConversionMulTest: transa %i, transb %i, lda %li, ldb %li, ldc %li, alpha %f, beta %f\n",
++			transa, transb, args->lda, args->ldb, args->ldc,
++			*((double*) args->alpha), *((double*) args->beta));
++
++	std::shared_ptr<double[]> matA = toRowMajorStandardStride((double*)args->a, transa, args->lda, args->m, args->k);
++	if(nullptr == matA)
++	{
++		fiError("toRowMajorStandardStride failed\n");
++		return -2;
++	}
++
++	std::shared_ptr<double[]> matB = toRowMajorStandardStride((double*)args->b, transb, args->ldb, args->k, args->n);
++	if(nullptr == matB)
++	{
++		fiError("toRowMajorStandardStride failed\n");
++		return -2;
++	}
++
++	std::vector<double> matGemm(args->m * args->n);
++	for(long row = 0; row < args->m; row++)
++	{
++		for(long col = 0; col < args->n; col++)
++		{
++			matGemm[row * args->n + col] = 0;
++			for(long sum = 0; sum < args->k; sum++)
++			{
++				matGemm[row * args->n + col] += *((double*)args->alpha) * matA[row * args->k + sum] * matB[sum * args->n + col];
++			}
++		}
++	}
++
++	// Add C ?
++	const double beta = *((double *) args->beta);
++	if(beta)
++	{
++		if(nullptr == cOriginal)
++		{
++			fiError("Original c is null!\n");
++			return -4;
++		}
++
++		std::shared_ptr<double[]> matC = toRowMajorStandardStride((double*) cOriginal, 0, args->ldc, args->m, args->n);
++		if(nullptr == matC)
++		{
++			fiError("toRowMajorStandardStride failed\n");
++			return -2;
++		}
++
++		for(long index = 0; index < args->m * args->n; index++)
++		{
++			matGemm[index] += beta * matC[index];
++		}
++	}
++
++	// convert back
++	std::vector<double> cTmp(args->ldc * args->n);
++		memcpy(cTmp.data(), args->c, sizeof(double) * args->ldc * args->n);
++
++	if(toColMajorWithStride(cTmp.data(), matGemm.data(), 0, args->ldc, args->m, args->n))
++	{
++		fiError("toColMajorWithStride failed\n");
++		return -5;
++	}
++
++	// Check results
++	for(long index = 0; index < args->ldc * args->n; index++)
++	{
++		const double tolerance = fmax(2.e-15, fabs(((double*)args->c)[index]) / 1000.0);
++		const double absDifference = fabs(cTmp[index] - ((double*)args->c)[index]);
++		if(absDifference > tolerance)
++		{
++			fiError("Results don't match: %f vs %f (absDifference %.2e, tolerance %.2e)\n",
++					cTmp[index], ((double*)args->c)[index], absDifference, tolerance);
++			return -6;
++		}
++	}
++
++	return 0;
++}
++
++[[maybe_unused]] static int RuntimeTests(int transa, int transb, blas_arg_t * args, const void * cOriginal, size_t elemSize)
++{
++	if(sizeof(double) != elemSize)
++	{
++		fiError("Only support double\n");
++		return -1;
++	}
++
++	if(matrixConversionTest((double*)args->a, transa, args->lda, args->m, args->k))
++	{
++		fiError("matrixConversionTest failed\n");
++		return -3;
++	}
++
++	if(matrixConversionTest((double*)args->b, transb, args->ldb, args->k, args->n))
++	{
++		fiError("matrixConversionTest failed\n");
++		return -3;
++	}
++
++	if(matrixConversionTest((double*)args->c, 0, args->ldc, args->m, args->n))
++	{
++		fiError("matrixConversionTest failed\n");
++		return -3;
++	}
++
++	if(matrixConversionMulTest(transa, transb, args, cOriginal, elemSize))
++	{
++		fiError("matrixConversionMulTest failed\n");
++		return -3;
++	}
++
++	return 0;
++}
++
++#if HW_SIMULATION
++static int hwFi(blasFi_t * blasFi, int transa, int transb, blas_arg_t * args, const void * cOriginal, size_t elemSize)
++{
++	// TODO: Most of this code should probably be moved into systolicArraySim class
++	if(sizeof(double) != elemSize)
++	{
++		fiError("Unsupported Size\n");
++		return -1;
++	}
++
++#if TEST_EN
++	// Test that conversions work
++	if(RuntimeTests(transa, transb, args, cOriginal, elemSize))
++	{
++		fiError("RuntimeTests failed\n");
++		return -3;
++	}
++	else
++	{
++		fiDebug("RuntimeTests passed\n");
++	}
++#endif // TEST_EN
++
++	SystolicArraySim * saSim = (SystolicArraySim*) blasFi->MmaFi;
++
++	// Choose output tile size
++	const bool tileEn = (args->m > (long) saSim->Mtile()) && (args->n > (long) saSim->Ntile());
++
++#if OUT_POSITION_QUICKFIX_EN
++	// Multiple non-tileEn K-blocks require different mma positions in between to avoid pipeline read before write
++	const size_t mMmaPositions = (args->k >= 2 * saSim->Kmma()) ?  mMmaPositions_quickfix : 1;
++	const size_t nMmaPositions = (args->k >= 2 * saSim->Kmma()) ?  nMmaPositions_quickfix : 1;
++
++	const long outMCnt = tileEn ? saSim->Mtile() : mMmaPositions * saSim->Mmma();
++	const long outNCnt = tileEn ? saSim->Ntile() : nMmaPositions * saSim->Nmma();
++	const long outKCnt = tileEn ? saSim->Ktile() : saSim->Kmma();
++
++#else // !OUT_POSITION_QUICKFIX_EN
++	const long outMCnt = tileEn ? saSim->Mtile() : saSim->Mmma();
++	const long outNCnt = tileEn ? saSim->Ntile() : saSim->Nmma();
++	const long outKCnt = tileEn ? saSim->Ktile() : saSim->Kmma();
++#endif // OUT_POSITION_QUICKFIX_EN
++
++	// Choose random output tile positions
++	std::vector<long> outMPos;
++	std::vector<long> outNPos;
++
++	if(BLASFIMODE_TRANSIENT == blasFi->Mode) // just one tile will be affected
++	{
++		// coverity[DC.WEAK_CRYPTO]
++		outMPos.push_back((rand() % (args->m / outMCnt)) * outMCnt);
++
++		// coverity[DC.WEAK_CRYPTO]
++		outNPos.push_back((rand() % (args->n / outNCnt)) * outNCnt);
++	}
++	else if(BLASFIMODE_PERMANENT == blasFi->Mode) // randomly distribute job across available Systolic Arrays
++	{
++#ifndef IMPLEMENTED
++		if(!tileEn)
++		{
++			fiError("Permanent faults for smaller than tile sizes not implemented\n");
++			return -3;
++		}
++#endif // ndef IMPLEMENTED
++
++		// TODO: Below handing is not quite correct for the case when not tileEn
++		// In that case, each SA would still have a smaller tiling algorithm to optimize buffer usage
++		// rather than scheduling individual mma calls
++		const size_t tileCnt = (args->m / outMCnt) * (args->n / outNCnt);
++		const size_t maxSAParallel = tileCnt / saSim->ThreadsPerSA() ? tileCnt / saSim->ThreadsPerSA() : 1;
++
++		// If a Systolic Array is used, it will be used with all its threads
++		size_t tilesToFiCnt = 0;
++		if(maxSAParallel <= saSim->SACnt())
++		{
++			// More SAs than needed...will this calc use the faulty SA?
++			// coverity[DC.WEAK_CRYPTO]
++			const int randSA = rand() % saSim->SACnt();
++			if(randSA < (int) maxSAParallel)
++			{
++				// If we have less threads than ThreadsPerSA we can only schedule those
++				tilesToFiCnt = (saSim->ThreadsPerSA() < tileCnt) ? saSim->ThreadsPerSA() : tileCnt;
++			}
++		}
++		else // more SAs may run in parallel than we have .. use faulty SA multiple times?
++		{
++			const float multiUseFactor = ((float) maxSAParallel) / saSim->SACnt();
++
++			tilesToFiCnt = floor(multiUseFactor) * saSim->ThreadsPerSA();
++
++			// Use one more? E.g. factor is 2.5 then there is a chance faulty SA will be used thrice
++			// Get the decimals times 1000, i.e. above would give 500
++			const int kiloDec = floor(multiUseFactor * 1000) - floor(multiUseFactor) * 1000;
++			// coverity[DC.WEAK_CRYPTO]
++			const int randSA = rand() % 1000;
++			if(randSA < kiloDec) // i.e. with numbers above: if rand < 500
++			{
++				tilesToFiCnt += saSim->ThreadsPerSA();
++			}
++		}
++
++		if(0 == tilesToFiCnt)
++		{
++			fiFaultDebug("Perm. fault skipping this gemm\n");
++			return 0;
++		}
++
++		// Generate tilesToFiCnt random out positions
++		while(outMPos.size() < tilesToFiCnt) // TODO: Very dirty way to make sure we don't get the same pos multiple times
++		{
++			// coverity[DC.WEAK_CRYPTO]
++			const long mPosCandidate = (rand() % (args->m / outMCnt)) * outMCnt;
++			// coverity[DC.WEAK_CRYPTO]
++			const long nPosCandidate = (rand() % (args->n / outNCnt)) * outNCnt;
++
++			bool posUnique = true;
++			for(size_t index = 0; index < outMPos.size(); index++)
++			{
++				if((mPosCandidate == outMPos[index]) && (nPosCandidate == outNPos[index]))
++				{
++					posUnique = false;
++					break;
++				}
++			}
++
++			if(posUnique)
++			{
++				outMPos.push_back(mPosCandidate);
++				outNPos.push_back(nPosCandidate);
++			}
++		}
++	}
++
++	fiFaultDebug("Chose %s positions: ", tileEn ? "Tile" : "Mma");
++	for(size_t pos = 0; pos < outMPos.size(); pos++)
++	{
++		fiFaultDebug("(%lu, %lu), ", outMPos[pos], outNPos[pos]);
++	}
++	fiFaultDebug("\n");
++
++	// Convert matrices to row major with standard strides
++	// TODO: Save overhead by just converting the submatrices required for the simulated Systolic Array!
++	std::shared_ptr<double[]> matA = toRowMajorStandardStride((double*)args->a, transa, args->lda, args->m, args->k);
++	if(nullptr == matA)
++	{
++		fiError("toRowMajorStandardStride failed\n");
++		return -2;
++	}
++
++	// apply alpha to matA
++	const double alpha = *((double *) args->alpha);
++	if(1.0 != alpha)
++	{
++		for(long index = 0; index < args->m * args->k; index++)
++		{
++			matA[index] *= alpha;
++		}
++	}
++
++	std::shared_ptr<double[]> matB = toRowMajorStandardStride((double*)args->b, transb, args->ldb, args->k, args->n);
++	if(nullptr == matB)
++	{
++		fiError("toRowMajorStandardStride failed\n");
++		return -2;
++	}
++
++	// Reset C elements calculated by chosen output mma / tile
++	// TODO: Save overhead by just converting the required submatrix from C
++	std::shared_ptr<double[]> matC = toRowMajorStandardStride((double*) args->c, 0, args->ldc, args->m, args->n);
++	if(nullptr == matC)
++	{
++		fiError("toRowMajorStandardStride failed\n");
++		return -2;
++	}
++
++	// If original C is added, then restore original C for SA calculated elements, else set to 0
++	const double beta = *((double *) args->beta);
++	if(beta) // Original C is added
++	{
++		if(nullptr == cOriginal)
++		{
++			fiError("Original c is null!\n");
++			return -4;
++		}
++
++		std::shared_ptr<double[]> matCOriginal = toRowMajorStandardStride((double*) cOriginal, 0, args->ldc, args->m, args->n);
++		if(nullptr == matCOriginal)
++		{
++			fiError("toRowMajorStandardStride failed\n");
++			return -2;
++		}
++
++		for(size_t pos = 0; pos < outMPos.size(); pos++)
++		{
++			for(long row = outMPos[pos]; row < outMPos[pos] + outMCnt; row++)
++			{
++				for(long col = outNPos[pos]; col < outNPos[pos] + outNCnt; col++)
++				{
++					matC[row * args->n + col] = beta * matCOriginal[row * args->n + col];
++				}
++			}
++		}
++	}
++	else // Set to zero if not added (because SA only supports adding to C)
++	{
++		for(size_t pos = 0; pos < outMPos.size(); pos++)
++		{
++			for(long row = outMPos[pos]; row < outMPos[pos] + outMCnt; row++)
++			{
++				for(long col = outNPos[pos]; col < outNPos[pos] + outNCnt; col++)
++				{
++					matC[row * args->n + col] = 0;
++				}
++			}
++		}
++	}
++
++	// Dispatch to SA
++	for(size_t pos = 0; pos < outMPos.size(); pos++)
++	{
++		for(long sum = 0; sum + outKCnt <= args->k; sum += outKCnt)
++		{
++			SystolicArraySim::job_t job = {
++					matA.get() + outMPos[pos] * args->k + sum, (size_t) args->k,
++					matB.get() + sum * args->n + outNPos[pos], (size_t) args->n,
++					matC.get() + outMPos[pos] * args->n + outNPos[pos], (size_t) args->n};
++
++			if(tileEn)
++			{
++				if(saSim->DispatchTile(job))
++				{
++					fiError("DispatchTile failed\n");
++					return -5;
++				}
++			}
++			else
++			{
++				if(saSim->DispatchMma(job, mMmaPositions, nMmaPositions))
++				{
++					fiError("DispatchMma failed\n");
++					return -5;
++				}
++			}
++		}
++
++		if(BLASFIMODE_TRANSIENT == blasFi->Mode)
++		{
++			if(mmaFiSet(saSim, blasFi))
++			{
++				fiError("mmaFiSet failed\n");
++				return -7;
++			}
++		}
++
++		if(mmaFiExec(saSim))
++		{
++			fiError("mmaFiExec failed\n");
++			return -5;
++		}
++
++		if(saSim->ErrorDetected())
++		{
++			blasFi->ErrorDetected = 1;
++			fiInfo("RTL raised error\n");
++		}
++
++		if(BLASFIMODE_TRANSIENT == blasFi->Mode)
++		{
++			if(mmaFiReset(saSim))
++			{
++				fiError("mmaFiReset failed\n");
++				return -5;
++			}
++		}
++
++		// Handle K-rest?
++		if(0 != (args->k % outKCnt))
++		{
++			for(long row = outMPos[pos]; row < outMPos[pos] + outMCnt; row++)
++			{
++				for(long col = outNPos[pos]; col < outNPos[pos] + outNCnt; col++)
++				{
++					for(long sum = outKCnt * (args->k / outKCnt); sum < args->k; sum++)
++					{
++						matC[row * args->n + col] += matA[row * args->k + sum] * matB[sum * args->n + col];
++					}
++				}
++			}
++		}
++	}
++
++#if TEST_EN
++	// Create copy of gemm output without our modifications
++	const size_t elemCntC = args->n * args->ldc;
++	double * expectedC = (double *) malloc(sizeof(double) * elemCntC);
++	if(nullptr == expectedC)
++	{
++		fiError("malloc failed\n");
++		return -1;
++	}
++
++	memcpy(expectedC, args->c, sizeof(double) * elemCntC);
++#endif // TEST_EN
++
++	// Copy result back to C
++	if(toColMajorWithStride((double *) args->c, matC.get(), 0, args->ldc, args->m, args->n))
++	{
++		fiError("toColMajorWithStride failed\n");
++		return -5;
++	}
++
++#if TEST_EN
++	for(size_t index = 0; index < elemCntC; index++)
++	{
++		const double actualC = ((double *) args->c)[index];
++		if(0.001 < fabs(actualC - expectedC[index])) // TODO: Arbitrary threshold!!
++		{
++			fiError("Actual output index %lu doesn't match expected: %f vs %f\n", index, actualC, expectedC[index]);
++			return -6;
++		}
++	}
++
++	free(expectedC);
++#endif // TEST_EN
++
++	return 0;
++}
++#endif // HW_SIMULATION
++
++// maxRelError in percent
++// Returns relative error
++template<typename T>
++float gemmRelativeError(T * io, long fiIndex, long M, long N, long ld, float maxRelError)
++{
++	// Calculate average of absolute values
++	double avg = 0;
++	for(long col = 0; col < N; col++)
++	{
++		for(long row = 0; row < M; row++)
++		{
++			avg += fabs(io[row + col * ld]);
++		}
++	}
++
++	avg /= M * N;
++
++	// Create random number 0 ... maxRelError / 100
++	// coverity[DC.WEAK_CRYPTO]
++	const double randomFactor = (((double) rand()) * maxRelError / 100.) / RAND_MAX;
++	// coverity[DC.WEAK_CRYPTO]
++	io[fiIndex] += avg * randomFactor * (rand() % 2 ? -1. : 1.);
++
++	return randomFactor;
++}
++
++// Dictates whether a given GEMM call is suitable for FI or not. Returns:
++// <= 0 if the GEMM call is unsuitable for FI
++//  > 0 if the GEMM call is suitable for FI
++//  The optional opCntExt argument stores the new GEMM counter after this op
++int selectedForFi(int transa, int transb, blas_arg_t * args, size_t elemSize, size_t * opCntExt)
++{
++	if(0 == args->m * args->k * args->n)
++	{
++		// not a real gemm
++		return 0;
++	}
++
++	// Check if initialized
++	if(NULL == blasFi)
++	{
++		fiDebug("Nullpointer: FI Off!\n");
++		return 0;
++	}
++
++	// Check if Op is supported
++	if((0 > transa) ||(1 < transa) || (0 > transb) || (1 < transb))
++	{
++		fiWarning("Unsupported Trans\n");
++		return 0;
++	}
++
++	// Cnt Ops and check if we want to fi
++	LOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++
++	const size_t opsCntOld = blasFi->OpsCnt;
++
++#if HW_SIMULATION
++	SystolicArraySim * saSim = (SystolicArraySim*) blasFi->MmaFi;
++
++	// below operation ordered on purpose s.t. division result is zero if divisor is larger
++#if OUT_POSITION_QUICKFIX_EN
++	// Can't dispatch two Kmma blocks without different M, N positions in between
++	const size_t outPositions = (args->m / (mMmaPositions_quickfix * saSim->Mmma())) * (args->n / (nMmaPositions_quickfix * saSim->Nmma()));
++	if((0 == outPositions) && (args->k >= 2 * saSim->Kmma()))
++	{
++		// TODO: In principle, e.g. 1 x 4 MMA outposition pattern would also work (just testing for 2 x 2 above)
++		const size_t outPositionsReal = (args->m / saSim->Mmma()) * (args->n / saSim->Nmma());
++		const size_t outPositionsRealTrans = (args->n / saSim->Mmma()) * (args->m / saSim->Nmma());
++		if((outPositionsReal >= saSim->RequiredOutPositionsBetweenK()) ||
++				(outPositionsRealTrans >= saSim->RequiredOutPositionsBetweenK()))
++		{
++			fiWarning("outPositions working in principle but skipped because not implemented\n");
++		}
++
++		fiWarning("Skipping %lu x %lu x %lu GEMM: Not enough output positions for Systolic Array\n", args->m, args->k, args->n);
++		UNLOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++		return 0;
++	}
++#else // !OUT_POSITION_QUICKFIX_EN
++#error Implement correct out position handling
++#endif // !OUT_POSITION_QUICKFIX_EN
++
++	const size_t opCnt = (args->m / saSim->Mmma()) * (args->k / saSim->Kmma()) * (args->n / saSim->Nmma());
++	const size_t opCntTrans = (args->n / saSim->Mmma()) * (args->k / saSim->Kmma()) * (args->m / saSim->Nmma());
++	if(opCnt < opCntTrans) // TODO: Implement transpose gemm
++	{
++		fiWarning("opCnt is smaller than transpose opCnt (transpose not implemented)\n");
++	}
++
++	if(0 == opCnt)
++	{
++		fiDebug("Skipping %lu x %lu x %lu GEMM: Too small for Systolic Array\n", args->m, args->k, args->n);
++		UNLOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++		return 0;
++	}
++	else if(sizeof(double) != elemSize)
++	{
++		fiError("HW-Simulation: Only double implemented, got element size %lu\n", elemSize);
++		UNLOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++		return -2;
++	}
++#else // !HW_SIMULATION
++	const size_t opCnt = 2 * args->m * args->k * args->n; // ops count used by open blas
++#endif // !HW_SIMULATION
++
++	// Increment the ops counter given as input
++	if( opCntExt ) {
++		*opCntExt = opCnt + opsCntOld;
++	}
++
++	// Check if enabled - done after updating total ops count
++	if (blasFi->Mode == BLASFIMODE_NONE) {
++		UNLOCK_COMMAND((MUTEX_TYPE*)blasFi->Mutex);
++		return 0;
++	}
++	
++	// Do we FI this op?
++	switch(blasFi->Mode)
++	{
++	case BLASFIMODE_TRANSIENT:
++		if((opsCntOld > blasFi->OpFi) || (blasFi->OpFi >= (opCnt + opsCntOld)))
++		{
++			UNLOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++			return 0;
++		}
++		break;
++
++	case BLASFIMODE_PERMANENT:
++		// always FI
++		break;
++
++	case BLASFIMODE_NONE: // no break intended
++	default:
++		fiError("Unknown blasFi->Mode: %i\n", blasFi->Mode);
++		return -3;
++	}
++
++	UNLOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++	return 1;
++}
++
++// See gemm.c for arg usage
++// ldx specifies the column stride (fortran is column major), i.e. a(i,j) = a[i + j * lda]
++int gemmFi(int transa, int transb, blas_arg_t * args, const void * cOriginal, size_t elemSize)
++{
++        fiDebug("M x K x N = %lu x %lu x %lu\n", args->m, args->k, args->n);
++
++	int selected = selectedForFi(transa, transb, args, elemSize, &(blasFi->OpsCnt));
++	if ( selected <= 0 )
++	{
++		return selected;
++	}
++
++	LOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++
++	// Let's FI this!
++#if HW_SIMULATION
++
++	if(hwFi(blasFi, transa, transb, args, cOriginal, elemSize))
++	{
++		UNLOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++		fiError("hwFi failed\n");
++		return -3;
++	}
++
++#else // !HW_SIMULATION
++
++	// coverity[DC.WEAK_CRYPTO]
++	const int fiM = rand() % args->m;
++	// coverity[DC.WEAK_CRYPTO]
++	const int fiN = rand() % args->n;
++	const int fiIndex = fiM + fiN * args->ldc;
++	if(sizeof(float) == elemSize)
++	{
++#if DEBUG_EN
++		const float oldValue = ((float *) args->c)[fiIndex];
++#endif // DEBUG_EN
++
++		// coverity[DC.WEAK_CRYPTO]
++		const int fiBit = rand() % (sizeof(float) * 8);
++		uint32_t * u32 = (uint32_t *) args->c;
++		u32[fiIndex] ^= (1 << fiBit);
++
++		blasFi->OpFiBitPos = fiBit;
++
++#if DEBUG_EN
++		const float fiValue = ((float *) args->c)[fiIndex];
++#endif // DEBUG_EN
++
++		fiDebug("Performed FI %f -> %f (Index %i, Bit %lu, rel Error %f)\n", oldValue, fiValue, fiIndex, blasFi->OpFiBitPos, blasFi->OpFiRelError);
++	}
++	else if(sizeof(double) == elemSize)
++	{
++#if DEBUG_EN
++		const double oldValue = ((double *) args->c)[fiIndex];
++#endif // DEBUG_EN
++
++		// coverity[DC.WEAK_CRYPTO]
++		const int fiBit = rand() % (sizeof(double) * 8);
++		uint64_t * u64 = (uint64_t *) args->c;
++		u64[fiIndex] ^= (1LU << fiBit);
++
++		blasFi->OpFiBitPos = fiBit;
++
++#if DEBUG_EN
++		const double fiValue = ((double *) args->c)[fiIndex];
++#endif // DEBUG_EN
++
++		fiDebug("Performed FI %f -> %f (Index %i, Bit %lu, rel Error %f)\n", oldValue, fiValue, fiIndex, blasFi->OpFiBitPos, blasFi->OpFiRelError);
++	}
++	else
++	{
++		fiError("Fi of elem size %lu not implemented\n", elemSize);
++		UNLOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++		return -1;
++	}
++#endif // !HW_SIMULATION
++
++	UNLOCK_COMMAND((MUTEX_TYPE*) blasFi->Mutex);
++
++	return 0;
++}
+diff --git a/interface/faultInjector.h b/interface/faultInjector.h
+new file mode 100644
+index 00000000..7e2734cb
+--- /dev/null
++++ b/interface/faultInjector.h
+@@ -0,0 +1,73 @@
++/*
++ * Copyright (c) 2022, Intel Corporation
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in
++ *    the documentation and/or other materials provided with the
++ *    distribution.
++ *
++ * 3. Neither the name of the OpenBLAS project nor the names of
++ *    its contributors may be used to endorse or promote products
++ *    derived from this software without specific prior written
++ *    permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
++ * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifndef INTERFACE_FAULTINJECTOR_H_
++#define INTERFACE_FAULTINJECTOR_H_
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define BLASFIOPSCNT_ENV_VAR "BLASFI_OPSCNT"
++
++#define BLASFIMODE_ENV_VAR "BLASFI_MODE"
++#define BLASFIMODE_NONE_CONST "NONE"
++#define BLASFIMODE_TRANSIENT_CONST "TRANSIENT"
++#define BLASFIMODE_PERMANENT_CONST "PERMANENT"
++
++#define BLASFICORRUPTION_ENV_VAR "BLASFI_CORRUPTION"
++#define BLASFICORRUPTION_NONE_CONST "NONE"
++#define BLASFICORRUPTION_STUCKHIGH_CONST "STUCKHIGH"
++#define BLASFICORRUPTION_STUCKLOW_CONST "STUCKLOW"
++#define BLASFICORRUPTION_FLIP_CONST "FLIP"
++
++#define BLASFIBITS_ENV_VAR "BLASFI_BITS"
++#define BLASFIBITS_NONE_CONST "NONE"
++#define BLASFIBITS_EVERYWHERE_CONST "EVERYWHERE"
++#define BLASFIBITS_MANTISSA_CONST "MANTISSA"
++
++#define BLASFIOUTPUT_ENV_VAR "BLASFI_OUTPUT"
++#define BLASFIOUTPUT_STDOUT_CONST "STDOUT"
++#define BLASFIOUTPUT_STDERR_CONST "STDERR"
++
++extern int blasFiInit(int rank);
++extern int blasFiSet();
++extern int blasFiClose();
++extern void blasFiPrint();
++
++#ifdef __cplusplus
++}
++#endif
++
++
++#endif /* INTERFACE_FAULTINJECTOR_H_ */
+diff --git a/interface/faultInjectorComplex.h b/interface/faultInjectorComplex.h
+new file mode 100644
+index 00000000..bcd16146
+--- /dev/null
++++ b/interface/faultInjectorComplex.h
+@@ -0,0 +1,153 @@
++/*
++ * Copyright (c) 2022, Intel Corporation
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in
++ *    the documentation and/or other materials provided with the
++ *    distribution.
++ *
++ * 3. Neither the name of the OpenBLAS project nor the names of
++ *    its contributors may be used to endorse or promote products
++ *    derived from this software without specific prior written
++ *    permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
++ * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifndef INTERFACE_FAULTINJECTORCOMPLEX_H_
++#define INTERFACE_FAULTINJECTORCOMPLEX_H_
++
++#include <complex.h>
++
++#include "common.h"
++#include "faultInjectorInternal.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++
++/* The functions in this header file handle arrays of C _Complex elements and convert
++ * them to arrays of real values. All functions are static and defined within this header.
++ * This is due to two issues:
++ * 1) Our main source file, faultInjector.cpp, is in C++11. There appear to be inter-operability
++ *    issues between C and C++ when using the _Complex type, and therefore we have to place these
++ *    functions in a separate C source file.
++ * 2) In order to minimize code duplication, we leverage the OpenBLAS FLOAT macro, which describes
++ *    the floating-point type (float or double) for the current GEMM target. In order for this macro
++ *    resolution mechanism to work properly, the functions below need to be placed in a header.
++ */
++
++
++// This function will convert a complex OpenBLAS matrix, using the C99 _Complex type, to
++// a standard float or double matrix that can be processed by HDFIT. Each element of the
++// input matrix is converted to a 2x2 block matrix resembling ((x, -y) ; (y, x)), where
++// x is the input number's real component and y its imaginary one. As a side effect,
++// the size of the converted matrix is double compared to the original.
++// NOTE: the conversion is always to a column-major matrix and takes care of transpositions.
++static FLOAT* fromComplex(const FLOAT _Complex * in, const FLOAT _Complex * coeff, int trans, long ld, long rowCnt, long colCnt)
++{
++        if( in==NULL ) {
++                fiFatal("fromComplex received nullptr as input!\n");
++        }
++
++        FLOAT* out = (FLOAT*)malloc(sizeof(FLOAT) * rowCnt * colCnt * 4);
++        if( out==NULL ) {
++                fiFatal("fromComplex malloc failed!\n");
++        }
++
++        // coeff corresponds to alpha or beta in GEMM terms
++        // For ZGEMM, alpha and beta are also complex
++        FLOAT _Complex intCoeff = coeff==NULL ? 1 + I*0 : *coeff;
++        size_t i, j, rCnt=rowCnt*2;
++        for(i=0; i<rowCnt;i++) {
++                for(j=0; j<colCnt; j++) {
++                        FLOAT _Complex buf = in[trans%2 ? i * ld + j : i + j * ld] * intCoeff;
++                        out[(j*2) * rCnt + (i*2)]         = creal(buf);
++                        out[(j*2 + 1) * rCnt + (i*2 + 1)] = creal(buf);
++                        out[(j*2) * rCnt + (i*2 + 1)]     = trans<2 ? cimag(buf) : -cimag(buf);
++                        out[(j*2 + 1) * rCnt + (i*2)]     = trans<2 ? -cimag(buf) : cimag(buf);
++                }
++        }
++
++        return out;
++}
++
++// Converts a real matrix, where each 2x2 block matrix resembles ((x, -y) ; (y, x)), to a complex
++// one with each element being x + I*y, using the C99 _Complex type.
++static void toComplex(FLOAT _Complex * dest, const FLOAT* src, int trans, long ld, long rowCnt, long colCnt)
++{
++        if( src==NULL || dest==NULL ) {
++                fiFatal("toComplex received one or more nullptr as input!\n");
++        }
++
++        size_t i, j, idx, rCnt = rowCnt*2;
++        for(i=0; i<rowCnt;i++) {
++                for(j=0; j<colCnt; j++) {
++                        idx = trans ? i * ld + j : i + j * ld;
++                        dest[idx] = src[(j*2) * rCnt + (i*2)] + I*src[(j*2) * rCnt + (i*2 + 1)];
++                }
++        }
++}
++
++// Wrapper around gemmFi for ZGEMM support
++static int gemmFiComplex(int transa, int transb, blas_arg_t * args, const void * cOriginal, size_t elemSize)
++{
++        if( args==NULL ) {
++                fiFatal("gemmFiComplex received nullptr as input!\n");
++        }
++
++        blas_arg_t newArgs = *args;
++        newArgs.m = args->m * 2;
++        newArgs.k = args->k * 2;
++        newArgs.n = args->n * 2;
++        newArgs.lda = newArgs.m;
++        newArgs.ldb = newArgs.k;
++        newArgs.ldc = newArgs.m;
++
++        FLOAT alpha_real = 1.0;
++        FLOAT beta_real  = cOriginal ? 1.0 : 0.0;
++        newArgs.alpha = &alpha_real;
++        newArgs.beta  = &beta_real;
++
++        int selected = selectedForFi(0, 0, &newArgs, elemSize, NULL);
++        if( selected > 0 ) {
++                newArgs.a = fromComplex((FLOAT _Complex*)args->a, (FLOAT _Complex *)args->alpha, transa, args->lda, args->m, args->k);
++                newArgs.b = fromComplex((FLOAT _Complex*)args->b, NULL, transb, args->ldb, args->k, args->n);
++                newArgs.c = fromComplex((FLOAT _Complex*)args->c, NULL, 0, args->ldc, args->m, args->n);
++        }
++
++	//TODO: ensure locking to prevent race conditions when using multiple threads
++        int retCode = gemmFi(0, 0, &newArgs, cOriginal, elemSize);
++        if( selected > 0 ) {
++                toComplex((FLOAT _Complex*)args->c, (FLOAT*)newArgs.c, 0, args->ldc, args->m, args->n);
++                free(newArgs.c);
++                free(newArgs.b);
++                free(newArgs.a);
++        }
++
++        return retCode;
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* INTERFACE_FAULTINJECTORCOMPLEX_H_ */
+diff --git a/interface/faultInjectorInternal.h b/interface/faultInjectorInternal.h
+new file mode 100644
+index 00000000..285888e3
+--- /dev/null
++++ b/interface/faultInjectorInternal.h
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (c) 2022, Intel Corporation
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in
++ *    the documentation and/or other materials provided with the
++ *    distribution.
++ *
++ * 3. Neither the name of the OpenBLAS project nor the names of
++ *    its contributors may be used to endorse or promote products
++ *    derived from this software without specific prior written
++ *    permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
++ * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifndef INTERFACE_FAULTINJECTORINTERNAL_H_
++#define INTERFACE_FAULTINJECTORINTERNAL_H_
++
++#include "common.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define fiFatal(...) \
++		do { \
++			fprintf(stderr, "Error (%s:%i) FaultInjection: ", __FILE__, __LINE__); \
++			fprintf(stderr, __VA_ARGS__); \
++			fflush(stderr); \
++			exit(1); \
++		} while(0)
++
++extern int selectedForFi(int transa, int transb, blas_arg_t * args, size_t elemSize, size_t * opCntExt);
++extern int gemmFi(int transa, int transb, blas_arg_t * args, const void * cOriginal, size_t elemSize);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* INTERFACE_FAULTINJECTORINTERNAL_H_ */
+diff --git a/interface/gemm.c b/interface/gemm.c
+index 71cc77a1..f30e03f0 100644
+--- a/interface/gemm.c
++++ b/interface/gemm.c
+@@ -36,6 +36,39 @@
+ /* or implied, of The University of Texas at Austin.                 */
+ /*********************************************************************/
+ 
++/*
++ * Copyright (c) 2022, Intel Corporation
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in
++ *    the documentation and/or other materials provided with the
++ *    distribution.
++ *
++ * 3. Neither the name of the OpenBLAS project nor the names of
++ *    its contributors may be used to endorse or promote products
++ *    derived from this software without specific prior written
++ *    permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
++ * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include "common.h"
+@@ -43,6 +76,8 @@
+ #include "functable.h"
+ #endif
+ 
++#include "faultInjectorComplex.h"
++
+ #ifndef COMPLEX
+ #define SMP_THRESHOLD_MIN 65536.0
+ #ifdef XDOUBLE
+@@ -105,7 +140,7 @@ static int (*gemm[])(blas_arg_t *, BLASLONG *, BLASLONG *, IFLOAT *, IFLOAT *, B
+ #endif
+ };
+ 
+-#if defined(SMALL_MATRIX_OPT) && !defined(GEMM3M) && !defined(XDOUBLE)
++#if 0 // HDFIT: Small matrix optimization disabled because it bypasses fault injection. Original: #if defined(SMALL_MATRIX_OPT) && !defined(GEMM3M) && !defined(XDOUBLE)
+ #define USE_SMALL_MATRIX_OPT 1
+ #else
+ #define USE_SMALL_MATRIX_OPT 0
+@@ -331,6 +366,9 @@ void CNAME(enum CBLAS_ORDER order, enum CBLAS_TRANSPOSE TransA, enum CBLAS_TRANS
+  if (support_avx512() )
+ #endif  
+   if (beta == 0 && alpha == 1.0 && order == CblasRowMajor && TransA == CblasNoTrans && TransB == CblasNoTrans && SGEMM_DIRECT_PERFORMANT(m,n,k)) {
++
++	fiFatal("SGEMM_DIRECT used - not covered by FI!\n");
++
+ 	SGEMM_DIRECT(m, n, k, a, lda, b, ldb, c, ldc);
+ 	return;
+   }
+@@ -466,10 +504,38 @@ void CNAME(enum CBLAS_ORDER order, enum CBLAS_TRANSPOSE TransA, enum CBLAS_TRANS
+ 
+   FUNCTION_PROFILE_START();
+ 
++  // For fault injection: Create copy of original C? Only if beta != 0
++  if(sizeof(FLOAT) < sizeof(float))
++  {
++	  fiFatal("Only float and double supported!\n");
++  }
++
++  void * cOriginal = NULL;
++
++#ifndef COMPLEX
++  const double beta_double = (sizeof(FLOAT) == sizeof(float)) ? *((float *) args.beta) : *((double *) args.beta);
++  const long cSize = sizeof(FLOAT) * args.ldc * args.n;
++  if(beta_double) // TODO: Only do this if fault injection is executed!
++  {
++          cOriginal = malloc(cSize);
++          if(NULL == cOriginal)
++          {
++                  fiFatal("Malloc for original c failed!\n");
++          }
++          memcpy(cOriginal, args.c, cSize);
++  }
++#else // COMPLEX
++  const FLOAT _Complex beta_complex = *((FLOAT _Complex *) args.beta);
++  if(creal(beta_complex) || cimag(beta_complex)) {
++        cOriginal = fromComplex((double _Complex*)args.c, &beta_complex, 0, args.ldc, args.m, args.n);
++  }
++#endif // COMPLEX
++
+ #if USE_SMALL_MATRIX_OPT
+ #if !defined(COMPLEX)
+   if(GEMM_SMALL_MATRIX_PERMIT(transa, transb, args.m, args.n, args.k, *(FLOAT *)(args.alpha), *(FLOAT *)(args.beta))){
+-	  if(*(FLOAT *)(args.beta) == 0.0){
++	  fiFatal("GEMM_SMALL_KERNEL used - not covered by FI!\n");
++  	  if(*(FLOAT *)(args.beta) == 0.0){
+ 		(GEMM_SMALL_KERNEL_B0((transb << 2) | transa))(args.m, args.n, args.k, args.a, args.lda, *(FLOAT *)(args.alpha), args.b, args.ldb, args.c, args.ldc);
+ 	  }else{
+ 		(GEMM_SMALL_KERNEL((transb << 2) | transa))(args.m, args.n, args.k, args.a, args.lda, *(FLOAT *)(args.alpha), args.b, args.ldb, *(FLOAT *)(args.beta), args.c, args.ldc);
+@@ -478,6 +544,8 @@ void CNAME(enum CBLAS_ORDER order, enum CBLAS_TRANSPOSE TransA, enum CBLAS_TRANS
+   }
+ #else
+   if(GEMM_SMALL_MATRIX_PERMIT(transa, transb, args.m, args.n, args.k, alpha[0], alpha[1], beta[0], beta[1])){
++	  fiFatal("ZGEMM_SMALL_KERNEL used - not covered by FI!\n");
++
+ 	  if(beta[0] == 0.0 && beta[1] == 0.0){
+ 		(ZGEMM_SMALL_KERNEL_B0((transb << 2) | transa))(args.m, args.n, args.k, args.a, args.lda, alpha[0], alpha[1], args.b, args.ldb, args.c, args.ldc);
+ 	  }else{
+@@ -553,6 +621,22 @@ void CNAME(enum CBLAS_ORDER order, enum CBLAS_TRANSPOSE TransA, enum CBLAS_TRANS
+ 
+   FUNCTION_PROFILE_END(COMPSIZE * COMPSIZE, args.m * args.k + args.k * args.n + args.m * args.n, 2 * args.m * args.n * args.k);
+ 
++#ifdef COMPLEX
++  if(gemmFiComplex(transa, transb, &args, cOriginal, sizeof(FLOAT)))
++#else // !COMPLEX
++  if(gemmFi(transa, transb, &args, cOriginal, sizeof(FLOAT)))
++#endif // !COMPLEX
++  {
++	  fiFatal("gemmFi failed\n");
++  }
++
++
++  if(NULL != cOriginal)
++  {
++	  free(cOriginal);
++  }
++
++
+   IDEBUG_END;
+ 
+   return;
+-- 
+2.25.1
+
