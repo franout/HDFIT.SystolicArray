@@ -2,5 +2,5 @@
 
 echo "Applying patch for allowing synthesis"
 cd ..
-git apply ${SDENV_DESIGN_DIR}/0001-Integrating-HDFIT.patch
+git apply ./patches/Integrating-HDFIT4Synthesis.patch.patch
 
