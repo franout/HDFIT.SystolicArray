@@ -4,3 +4,8 @@ netlist/
 netlist_fma/
 
 *.o
+
+
+openblas/openblas/
+systolicArraySim.a
+testNetlist
