@@ -6,6 +6,7 @@ CXX_FLAGS= -Wall \
 		-Wno-unused-parameter \
 		-Werror \
 		-O3 \
+		-pthread \
 		-march=native \
 		-std=c++17
 		
@@ -13,11 +14,13 @@ CXX_FLAGS_VERILATED= -O3 \
 		-march=native \
 		-std=c++17
 
+VERILATOR_ROOT ?= /usr/share/verilator
 VERILATOR_TOP ?= /usr/share/verilator
 NETLIST_FAULT_INJECTOR_TOP ?= $(HOME)/HDFIT.NetlistFaultInjector
 
 VERILATOR_INC = -I$(VERILATOR_TOP)/include
 VERILATOR_SRC = $(VERILATOR_TOP)/include/verilated.cpp
+VERILATOR_SRC_THREADS_SAFE = $(VERILATOR_TOP)/include/verilated_threads.cpp
 NETLIST_FAULT_INJECTOR_INC = -I$(NETLIST_FAULT_INJECTOR_TOP)
 NETLIST_FAULT_INJECTOR_SRC = $(NETLIST_FAULT_INJECTOR_TOP)/netlistFaultInjector.cpp
 
@@ -89,18 +92,21 @@ SystolicArrayFiSignals.o:  $(DIR_SA_NETLIST)/SystolicArrayFiSignals.cpp $(NETLIS
 verilated.o : $(VERILATOR_SRC)
 	$(CXX) -c $(CXX_FLAGS_VERILATED) -fPIC $(VERILATOR_SRC) -o verilated.o
 
-systolicArraySim.a : verilated.o systolicArraySim_netlist.o helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a
-	ar r systolicArraySim.a verilated.o systolicArraySim_netlist.o helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o
+verilated_threads.o: $(VERILATOR_SRC_THREADS_SAFE)
+	$(CXX) -c $(CXX_FLAGS_VERILATED) -fPIC $(VERILATOR_SRC_THREADS_SAFE) -o verilated_threads.o
+
+systolicArraySim.a : verilated.o systolicArraySim_netlist.o helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a verilated_thread.o
+	ar r systolicArraySim.a verilated.o systolicArraySim_netlist.o helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o verilated_threads.o
 	ranlib systolicArraySim.a
 	./addLib.sh # adds VSystolicArray_netlist__ALL.a
 
-test : $(DIR_FMA)/VFMA__ALL.a $(DIR_SYSTOLIC_ARRAY)/VSystolicArray__ALL.a helpers.o systolicArraySim.o verilated.o main.cpp
+test : $(DIR_FMA)/VFMA__ALL.a $(DIR_SYSTOLIC_ARRAY)/VSystolicArray__ALL.a helpers.o systolicArraySim.o verilated.o main.cpp verilated_threads.o
 	$(CXX) $(CXX_FLAGS) -I$(DIR_FMA)  $(VERILATOR_INC) main.cpp -o test systolicArraySim.o \
-	$(DIR_SYSTOLIC_ARRAY)/VSystolicArray__ALL.a $(DIR_FMA)/VFMA__ALL.a helpers.o verilated.o
+	$(DIR_SYSTOLIC_ARRAY)/VSystolicArray__ALL.a $(DIR_FMA)/VFMA__ALL.a helpers.o verilated.o verilated_threads.o
 
-testNetlist: $(DIR_FMA_NETLIST)/obj_dir/VFMA_netlist__ALL.a $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a helpers.o systolicArraySim_netlist.o netlistFaultInjector.o SystolicArrayFiSignals.o verilated.o main.cpp
+testNetlist: $(DIR_FMA_NETLIST)/obj_dir/VFMA_netlist__ALL.a $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a helpers.o systolicArraySim_netlist.o netlistFaultInjector.o SystolicArrayFiSignals.o verilated.o main.cpp verilated_threads.o
 	$(CXX) $(CXX_FLAGS) -D NETLIST -I$(DIR_FMA_NETLIST)/obj_dir  $(VERILATOR_INC) main.cpp -o testNetlist systolicArraySim_netlist.o \
-	$(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a $(DIR_FMA_NETLIST)/obj_dir/VFMA_netlist__ALL.a helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o verilated.o
+	$(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a $(DIR_FMA_NETLIST)/obj_dir/VFMA_netlist__ALL.a helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o verilated.o verilated_threads.o
 
 openblas: systolicArraySim.a
 	cd openblas && make openblas
