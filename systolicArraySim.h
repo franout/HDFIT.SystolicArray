@@ -22,45 +22,46 @@
 #define SYSTOLICARRAYSIM_H_
 
 #include <stdint.h>
-
 #include <deque>
 #include <vector>
 
-class SystolicArraySim {
+class SystolicArraySim
+{
 public:
 	// NOTE: Constructor assumes srand() was called!
 	SystolicArraySim();
 	virtual ~SystolicArraySim();
 
 	// Prevent copying (alternatively, implement copy/asgn duplicating cpy)
-	SystolicArraySim & operator=(const SystolicArraySim&) = delete; // assignment operator
-	SystolicArraySim(const SystolicArraySim &sa) = delete; // copy constructor
+	SystolicArraySim &operator=(const SystolicArraySim &) = delete; // assignment operator
+	SystolicArraySim(const SystolicArraySim &sa) = delete;			// copy constructor
 
-	const size_t &Mmma() const {return Config_.Mmma;};
-	const size_t &Kmma() const {return Config_.Kmma;};
-	const size_t &Nmma() const {return Config_.Nmma;};
+	const size_t &Mmma() const { return Config_.Mmma; };
+	const size_t &Kmma() const { return Config_.Kmma; };
+	const size_t &Nmma() const { return Config_.Nmma; };
 
-	const size_t &Mtile() const {return Config_.Mtile;};
-	const size_t &Ktile() const {return Config_.Kmma;};
-	const size_t &Ntile() const {return Config_.Ntile;};
+	const size_t &Mtile() const { return Config_.Mtile; };
+	const size_t &Ktile() const { return Config_.Kmma; };
+	const size_t &Ntile() const { return Config_.Ntile; };
 
-	const size_t &ThreadsPerSA() const {return Config_.ThreadCnt;};
-	const size_t &SACnt() const {return Config_.SystolicArrayCnt;};
+	const size_t &ThreadsPerSA() const { return Config_.ThreadCnt; };
+	const size_t &SACnt() const { return Config_.SystolicArrayCnt; };
 
-	size_t RequiredOutPositionsBetweenK() const {return 4;}; // = jobCycleDone / jobCyclePassedFirstStage // TODO: Put these into header
+	size_t RequiredOutPositionsBetweenK() const { return 4; }; // = jobCycleDone / jobCyclePassedFirstStage // TODO: Put these into header
 
-	typedef struct {
-		const double * MatA; // row-major Mmma x Kmma / Mtile x Ktile matrix
-		size_t StrideA; // >= Kmma / Ktile
-		const double * MatB; // row-major Kmma x Nmma / .. tile matrix
-		size_t StrideB; // >= Nmma / Ntile
-		double * MatC; // row-major Mmma x Nmma / .. tile matrix
-		size_t StrideC; // >= Nmma / Ntile
+	typedef struct
+	{
+		const double *MatA; // row-major Mmma x Kmma / Mtile x Ktile matrix
+		size_t StrideA;		// >= Kmma / Ktile
+		const double *MatB; // row-major Kmma x Nmma / .. tile matrix
+		size_t StrideB;		// >= Nmma / Ntile
+		double *MatC;		// row-major Mmma x Nmma / .. tile matrix
+		size_t StrideC;		// >= Nmma / Ntile
 	} job_t;
 
 	int DispatchMma(const job_t &job);
 	int DispatchMma(const job_t &job, size_t mCnt, size_t nCnt); // mCnt (nCnt) MMA-sized rows (columns)
-	int DispatchTile(const job_t &job); // optimized for buffer architecture
+	int DispatchTile(const job_t &job);							 // optimized for buffer architecture
 
 	// Exec will write to MatC as specified in job
 	// fastTransient : Don't run simulation if transient fault not active
@@ -68,7 +69,7 @@ public:
 	int ExecRtl(bool fastTransient = false, bool fastTransientTest = false);
 	int ExecCsim(size_t maxJobs = SIZE_MAX);
 
-	bool ErrorDetected() const {return DieError_;}; //  parity, residue, or protocol error raised inside RTL
+	bool ErrorDetected() const { return DieError_; }; //  parity, residue, or protocol error raised inside RTL
 
 	static int UnitTest(); // Assumes srand was called outside!
 	static int UnitTestNoFi(int exponentRange);
@@ -76,31 +77,40 @@ public:
 	// Fault stuff
 
 	// For Csim fault sim
-	enum class fiCorruption {
+	enum class fiCorruption
+	{
 		None,
 		StuckHigh,
 		StuckLow,
-		Flip};
+		Flip
+	};
 
-	enum class fiMode {
+	enum class fiMode
+	{
 		None,
 		Transient,
-		Permanent};
+		Permanent
+	};
 
-	enum class fiBits {
+	enum class fiBits
+	{
 		None,
 		Everywhere,
-		Mantissa};
+		Mantissa
+	};
 
-	enum class fiCsimPlace {
+	enum class fiCsimPlace
+	{
 		None,
 		Everywhere,
 		Inputs,
 		Multipliers,
 		AccAdders,
-		ColumnAdders}; // Don't add enums without chaing FiSetCsim
+		ColumnAdders
+	}; // Don't add enums without chaing FiSetCsim
 
-	typedef struct {
+	typedef struct
+	{
 		fiCsimPlace Place = fiCsimPlace::None;
 		fiCorruption Corruption = fiCorruption::None;
 		fiMode Mode = fiMode::None;
@@ -113,15 +123,16 @@ public:
 	// within current job-Queue - so dispatch jobs first.
 	// Struct elements are set to "None" upon error
 	faultCsim_t FiSetCsim(
-			fiCsimPlace place,
-			fiBits bits,
-			fiCorruption corruption,
-			fiMode mode);
+		fiCsimPlace place,
+		fiBits bits,
+		fiCorruption corruption,
+		fiMode mode);
 
 	int FiResetCsim();
 
 	// For RTL fault sim
-	typedef struct {
+	typedef struct
+	{
 		std::vector<uint16_t> ModuleInstanceChain;
 		uint32_t AssignUUID = 0;
 		uint16_t BitPos = UINT16_MAX;
@@ -136,30 +147,34 @@ public:
 	int FiResetRTL();
 
 private:
-
 	size_t CycleCnt_ = 0;
 	bool DieError_ = false;
 
-	typedef struct {
-		size_t Mmma; // rcount
-		size_t Kmma; // depth
-		size_t Nmma; // exec_size
-		size_t BufferLeftSize; // how many Mmma x Kmma fit in there
+	typedef struct
+	{
+		size_t Mmma;			// rcount
+		size_t Kmma;			// depth
+		size_t Nmma;			// exec_size
+		size_t BufferLeftSize;	// how many Mmma x Kmma fit in there
 		size_t BufferRightSize; // how many Kmma x Nmma fit in there
 		size_t Mtile;
 		size_t Ntile;
-		size_t ThreadCnt; // how many threads run in parallel on one SA?
+		size_t ThreadCnt;		 // how many threads run in parallel on one SA?
 		size_t SystolicArrayCnt; // how many SAs work in parallel?
 	} config_t;
 
 	const config_t Config_ = {
-			8, 8, 8, // Mmma, Kmma, Nmma
-			8, 2, // BufferLeftSize, BufferRightSize
-			8 * 4, 4 * 8, // Mtile, Ntile
-			4, 16}; // ThreadCnt, SystolicArrayCnt
-	void * TbVoid_;
-
-	typedef struct {
+		8, 8, 8,	  // Mmma, Kmma, Nmma
+		8, 2,		  // BufferLeftSize, BufferRightSize
+		8 * 4, 4 * 8, // Mtile, Ntile
+		4, 16};		  // ThreadCnt, SystolicArrayCnt
+	void *TbVoid_;
+#ifdef VERILATOR_DUMP_VCD
+	void *myDumpTrace_ = nullptr;
+	void *contextp_ = nullptr;
+#endif /*VERILATOR_DUMP_VCD*/
+	typedef struct
+	{
 		size_t JobCycle;
 		job_t Job;
 	} queueEntry_t;
@@ -167,9 +182,9 @@ private:
 	std::deque<queueEntry_t> JobQueue_;
 	bool JobQueueReadBeforeWrite(const std::deque<queueEntry_t> &jobQueue) const;
 
-	int RowCsim(double * out, double * a, double * b, const faultCsim_t * fi = nullptr) const;
+	int RowCsim(double *out, double *a, double *b, const faultCsim_t *fi = nullptr) const;
 
-	int IoSet(void * Tb, std::deque<queueEntry_t> * jobs, bool clkHigh);
+	int IoSet(void *Tb, std::deque<queueEntry_t> *jobs, bool clkHigh);
 
 	const size_t FmaCycles_ = 12;
 	const size_t JobCycleOutputStart_ = (Kmma() / 2) * FmaCycles_ + 4;
@@ -182,7 +197,7 @@ private:
 	static int MmaTest(size_t mCnt, size_t nCnt, bool cSim, bool fiEn, bool fastTrans, bool FastTransTest);
 	static int MultiMmaTest(bool cSim);
 	static int TileTest(bool cSim);
-	static int GemmTest(bool cSim, const double * A, const double * B, const double * C, size_t M, size_t K, size_t N);
+	static int GemmTest(bool cSim, const double *A, const double *B, const double *C, size_t M, size_t K, size_t N);
 
 	// Fault stuff
 	// For Csim fault sim
@@ -192,10 +207,10 @@ private:
 	// For RTL fault sim
 	faultRTL_t FaultRTL_;
 	size_t FaultRTLTransCycle_ = SIZE_MAX; // for transient faults: In which cycle should fault occur?
-	void * NetlistFaultInjectorVoid_ = nullptr;
+	void *NetlistFaultInjectorVoid_ = nullptr;
 
-	static int FiRtlApply(void * TbVoid, const std::vector<uint16_t> &modInst, uint32_t assignNr, size_t fiBit);
-	static int FiRtlReset(void * TbVoid);
+	static int FiRtlApply(void *TbVoid, const std::vector<uint16_t> &modInst, uint32_t assignNr, size_t fiBit);
+	static int FiRtlReset(void *TbVoid);
 };
 
 #endif /* SYSTOLICARRAYSIM_H_ */
