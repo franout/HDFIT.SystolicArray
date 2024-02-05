@@ -23,12 +23,14 @@
 #include <stdlib.h>
 #include <time.h>
 #include <stdint.h>
+#include <sstream>
 
 #include <climits>
 #include <memory>
 #include <cmath>
 
 #include "verilated.h"
+#include "verilated_vcd_c.h"
 
 #ifdef NETLIST
 #include "netlistFaultInjector.hpp"
@@ -53,13 +55,16 @@
 static const double unitTestRelTolerance = 0.0000000003;
 static int unitTestExponentRange = INT_MAX; // TODO: Having this global is ugly
 
+#ifdef TEST_NETLIST
+static size_t dump_n = 0;
+#endif /*TEST_NETLIST*/
+
 template <typename Enumeration>
 auto to_integer(Enumeration const value)
-    -> typename std::underlying_type<Enumeration>::type
+	-> typename std::underlying_type<Enumeration>::type
 {
-    return static_cast<typename std::underlying_type<Enumeration>::type>(value);
+	return static_cast<typename std::underlying_type<Enumeration>::type>(value);
 }
-
 
 SystolicArraySim::SystolicArraySim()
 {
@@ -70,25 +75,70 @@ SystolicArraySim::SystolicArraySim()
 #endif
 
 	//  Instantiate our design
-	TbVoid_ = (void *) new testBench_t;
+	TbVoid_ = (void *)new testBench_t;
+
+#ifdef VERILATOR_DUMP_VCD
+	Verilated::traceEverOn(true);
+	contextp_ = (void *)new VerilatedContext;
+	static_cast<VerilatedContext *>(contextp_)->traceEverOn(true);
+	std::string fileName;
+#ifdef TEST_NETLIST
+	/*for each call dump the vcd automatically
+	 for not changing the constructor
+	 used only for test */
+	std::stringstream ss;
+	// dump in the current directory
+	ss << "dumps/simulation_run" << dump_n << ".vcd";
+	fileName = ss.str();
+	dump_n++;
+#else
+	if (const char *fileNameEnv = std::getenv("SDENV_TESTBENCH_VCD_FILE_PATH"))
+	{
+		fileName = std::string(fileNameEnv);
+	}
+	else
+	{
+		sasError("Filename for dumping VCD file not defined in ennviroment variables (SDENV_TESTBENCH_VCD_FILE_PATH not defined)\n");
+	}
+#endif /*TEST_NETLIST*/
+	myDumpTrace_ = (void *)new VerilatedVcdC();
+	// dump all the signals
+	static_cast<testBench_t *>(TbVoid_)->trace(static_cast<VerilatedVcdC *>(myDumpTrace_), 0, 1);
+	// dump signals in filename
+	static_cast<VerilatedVcdC *>(myDumpTrace_)->open(fileName.c_str());
+
+#endif /*VERILATOR_DUMP_VCD*/
 
 #ifdef NETLIST
 	// Initialize NetlistFaultInjector
 	auto netlistFaultInjector = new NetlistFaultInjector;
-	if(netlistFaultInjector->Init()) // TODO: Would be nicer if it used the struct required as input
+	if (netlistFaultInjector->Init()) // TODO: Would be nicer if it used the struct required as input
 	{
 		sasError("NetlistFaultInjector Init failed\n");
 	}
 
-	NetlistFaultInjectorVoid_ = (void*) netlistFaultInjector;
+	NetlistFaultInjectorVoid_ = (void *)netlistFaultInjector;
 #endif // NETLIST
 }
 
-SystolicArraySim::~SystolicArraySim() {
-	delete (testBench_t*) TbVoid_;
+SystolicArraySim::~SystolicArraySim()
+{
+
+#ifdef VERILATOR_DUMP_VCD
+	if (nullptr != myDumpTrace_)
+	{
+		static_cast<VerilatedVcdC *>(myDumpTrace_)->close();
+		delete (VerilatedVcdC *)myDumpTrace_;
+	}
+	else
+	{
+		sasError("Trace signal not defined\n");
+	}
+#endif /*VERILATOR_DUMP_VCD*/
+	delete (testBench_t *)TbVoid_;
 
 #ifdef NETLIST
-	delete (NetlistFaultInjector *) NetlistFaultInjectorVoid_;
+	delete (NetlistFaultInjector *)NetlistFaultInjectorVoid_;
 #endif // NETLIST
 }
 
@@ -122,20 +172,20 @@ int SystolicArraySim::DispatchMma(const job_t &job, size_t mCnt, size_t nCnt)
 #endif // DEBUG_VERBOSE
 
 	// Left buffer larger than right buffer: Walk through rows first
-	for(size_t row = 0; row < mCnt * Mmma(); row += Mmma())
+	for (size_t row = 0; row < mCnt * Mmma(); row += Mmma())
 	{
-		const double * Ap = job.MatA + row * job.StrideA;
-		for(size_t col = 0; col < nCnt * Nmma(); col += Nmma())
+		const double *Ap = job.MatA + row * job.StrideA;
+		for (size_t col = 0; col < nCnt * Nmma(); col += Nmma())
 		{
-			const double * Bp = job.MatB + col;
-			double * Cp = job.MatC + row * job.StrideC + col;
+			const double *Bp = job.MatB + col;
+			double *Cp = job.MatC + row * job.StrideC + col;
 
 			const job_t jobMma = {
-					Ap, job.StrideA,
-					Bp, job.StrideB,
-					Cp, job.StrideC};
+				Ap, job.StrideA,
+				Bp, job.StrideB,
+				Cp, job.StrideC};
 
-			if(DispatchMma(jobMma))
+			if (DispatchMma(jobMma))
 			{
 				sasError("DispatchMma failed\n");
 				return -1;
@@ -159,20 +209,20 @@ int SystolicArraySim::DispatchTile(const job_t &job)
 #endif // DEBUG_VERBOSE
 
 	// Left buffer larger than right buffer: Walk through rows first
-	for(size_t row = 0; row < Mtile(); row += Mmma())
+	for (size_t row = 0; row < Mtile(); row += Mmma())
 	{
-		const double * Ap = job.MatA + row * job.StrideA;
-		for(size_t col = 0; col < Ntile(); col += Nmma())
+		const double *Ap = job.MatA + row * job.StrideA;
+		for (size_t col = 0; col < Ntile(); col += Nmma())
 		{
-			const double * Bp = job.MatB + col;
-			double * Cp = job.MatC + row * job.StrideC + col;
+			const double *Bp = job.MatB + col;
+			double *Cp = job.MatC + row * job.StrideC + col;
 
 			const job_t jobMma = {
-					Ap, job.StrideA,
-					Bp, job.StrideB,
-					Cp, job.StrideC};
+				Ap, job.StrideA,
+				Bp, job.StrideB,
+				Cp, job.StrideC};
 
-			if(DispatchMma(jobMma))
+			if (DispatchMma(jobMma))
 			{
 				sasError("DispatchMma failed\n");
 				return -1;
@@ -184,7 +234,7 @@ int SystolicArraySim::DispatchTile(const job_t &job)
 }
 
 // Non-netlist simulation
-[[maybe_unused]] static int setValue(VlWide<3> * out, size_t outIndex, double in)
+[[maybe_unused]] static int setValue(VlWide<3> *out, size_t outIndex, double in)
 {
 	// TODO: Handle nan
 	//  65'b{11'b: -1023 biased exp, 54'sb: signed mantissa with leading 1}
@@ -193,25 +243,25 @@ int SystolicArraySim::DispatchTile(const job_t &job)
 	const uint16_t tmpExp = (uval.u64 >> 52) & BIT_MASK(11);
 
 	int64_t signedMantissa = uval.u64 & BIT_MASK(52);
-	if(std::isnormal(in))
+	if (std::isnormal(in))
 	{
 		signedMantissa |= 1ULL << 52;
 	}
 
-	if(uval.u64 & (1ULL << 63))
+	if (uval.u64 & (1ULL << 63))
 	{
 		signedMantissa = -signedMantissa;
 	}
 
 	signedMantissa &= BIT_MASK(54);
 
-	if(bitsCopy((uint8_t*) out[outIndex].data(), sizeof(out[0]), 0, (uint8_t*) &signedMantissa, 54))
+	if (bitsCopy((uint8_t *)out[outIndex].data(), sizeof(out[0]), 0, (uint8_t *)&signedMantissa, 54))
 	{
 		sasError("bitsCopy failed\n");
 		return -1;
 	}
 
-	if(bitsCopy((uint8_t*) out[outIndex].data(), sizeof(out[0]), 54, (uint8_t*) &tmpExp, 11))
+	if (bitsCopy((uint8_t *)out[outIndex].data(), sizeof(out[0]), 54, (uint8_t *)&tmpExp, 11))
 	{
 		sasError("bitsCopy failed\n");
 		return -1;
@@ -221,15 +271,15 @@ int SystolicArraySim::DispatchTile(const job_t &job)
 }
 
 // Netlist simulation
-[[maybe_unused]] static int setValue(WData* pData, size_t nData, size_t nBitsElem, size_t pos, double value)
+[[maybe_unused]] static int setValue(WData *pData, size_t nData, size_t nBitsElem, size_t pos, double value)
 {
-	if(65 != nBitsElem)
+	if (65 != nBitsElem)
 	{
 		sasError("nBitsData = %lu not implemented (only implemented for 65'b double so far)\n", nBitsElem);
 		return -1;
 	}
 
-	if(nBitsElem * pos >= 8 * nData)
+	if (nBitsElem * pos >= 8 * nData)
 	{
 		sasError("Pos doesn't fit into destination\n");
 		return -1;
@@ -242,25 +292,25 @@ int SystolicArraySim::DispatchTile(const job_t &job)
 	const uint16_t tmpExp = (uval.u64 >> 52) & BIT_MASK(11);
 
 	int64_t signedMantissa = uval.u64 & BIT_MASK(52);
-	if(std::isnormal(value))
+	if (std::isnormal(value))
 	{
 		signedMantissa |= 1ULL << 52;
 	}
 
-	if(uval.u64 & (1ULL << 63))
+	if (uval.u64 & (1ULL << 63))
 	{
 		signedMantissa = -signedMantissa;
 	}
 
 	signedMantissa &= BIT_MASK(54);
 
-	if(bitsCopy((uint8_t*) pData, nData, pos * nBitsElem, (uint8_t*) &signedMantissa, 54))
+	if (bitsCopy((uint8_t *)pData, nData, pos * nBitsElem, (uint8_t *)&signedMantissa, 54))
 	{
 		sasError("bitsCopy failed\n");
 		return -1;
 	}
 
-	if(bitsCopy((uint8_t*) pData, nData, pos * nBitsElem + 54, (uint8_t*) &tmpExp, 11))
+	if (bitsCopy((uint8_t *)pData, nData, pos * nBitsElem + 54, (uint8_t *)&tmpExp, 11))
 	{
 		sasError("bitsCopy failed\n");
 		return -1;
@@ -270,35 +320,35 @@ int SystolicArraySim::DispatchTile(const job_t &job)
 }
 
 // Non-netlist simulation
-[[maybe_unused]] static double getValue(VlWide<3> * in, size_t index)
+[[maybe_unused]] static double getValue(VlWide<3> *in, size_t index)
 {
 	return toDouble(in[index]);
 }
 
 // Netlist simulation
-[[maybe_unused]] static double getValue(const WData * pData, size_t nData, size_t nBitsElem, size_t pos)
+[[maybe_unused]] static double getValue(const WData *pData, size_t nData, size_t nBitsElem, size_t pos)
 {
-	if(65 != nBitsElem)
+	if (65 != nBitsElem)
 	{
 		sasError("nBitsData = %lu not implemented (only implemented for 65'b double so far)\n", nBitsElem);
 		return -1;
 	}
 
-	if(nBitsElem * (pos + 1) >= 8 * nData)
+	if (nBitsElem * (pos + 1) >= 8 * nData)
 	{
 		sasError("Pos doesn't fit into destination\n");
 		return -1;
 	}
 
 	VlWide<3> tmp;
-	for(size_t index = 0; index < sizeof(tmp.m_storage) / sizeof(tmp.m_storage[0]); index++)
+	for (size_t index = 0; index < sizeof(tmp.m_storage) / sizeof(tmp.m_storage[0]); index++)
 	{
 		tmp[index] = 0;
 	}
 
 	const size_t bitStart = pos * nBitsElem;
-	uint8_t* tmpU8 = (uint8_t*) tmp.data();
-	for(size_t bit = 0; bit < 65; bit++)
+	uint8_t *tmpU8 = (uint8_t *)tmp.data();
+	for (size_t bit = 0; bit < 65; bit++)
 	{
 		size_t tmpByte = bit / 8;
 		uint8_t tmpBit = bit % 8;
@@ -306,7 +356,7 @@ int SystolicArraySim::DispatchTile(const job_t &job)
 		size_t dataByte = (bitStart + bit) / 8;
 		uint8_t dataBit = (bitStart + bit) % 8;
 
-		if(((const uint8_t*)pData)[dataByte] & (1 << dataBit))
+		if (((const uint8_t *)pData)[dataByte] & (1 << dataBit))
 		{
 			tmpU8[tmpByte] |= 1 << tmpBit;
 		}
@@ -317,17 +367,17 @@ int SystolicArraySim::DispatchTile(const job_t &job)
 
 size_t SystolicArraySim::CyclesRequired(size_t jobCnt) const
 {
-	if(0 == jobCnt)
+	if (0 == jobCnt)
 	{
 		return 0;
 	}
 
-	return JobCycleDone_ + (jobCnt - 1) *(JobCyclePassedFirstStage_ + 1) + 1;
+	return JobCycleDone_ + (jobCnt - 1) * (JobCyclePassedFirstStage_ + 1) + 1;
 }
 
 size_t SystolicArraySim::JobsDoneInCycles(size_t cycleCnt) const
 {
-	if(JobCycleDone_ > cycleCnt)
+	if (JobCycleDone_ > cycleCnt)
 	{
 		return 0;
 	}
@@ -335,18 +385,18 @@ size_t SystolicArraySim::JobsDoneInCycles(size_t cycleCnt) const
 	return (cycleCnt - JobCycleDone_ - 1) / (JobCyclePassedFirstStage_ + 1) + 1;
 }
 
-int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool clkHigh)
+int SystolicArraySim::IoSet(void *TbVoid, std::deque<queueEntry_t> *jobs, bool clkHigh)
 {
-	if(jobs->empty())
+	if (jobs->empty())
 	{
 		sasError("deque is empty\n");
 		return -1;
 	}
 
 	std::vector<queueEntry_t *> concurrentJobs = {&jobs->front()};
-	for(size_t job = 1; job < jobs->size(); job++)
+	for (size_t job = 1; job < jobs->size(); job++)
 	{
-		if(jobs->at(job - 1).JobCycle > JobCyclePassedFirstStage_) // check that previous job has freed first stage
+		if (jobs->at(job - 1).JobCycle > JobCyclePassedFirstStage_) // check that previous job has freed first stage
 		{
 			concurrentJobs.push_back(&jobs->at(job));
 		}
@@ -356,19 +406,19 @@ int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool
 		}
 	}
 
-	testBench_t * Tb = (testBench_t*) TbVoid;
+	testBench_t *Tb = (testBench_t *)TbVoid;
 
 #ifdef NETLIST
 	const size_t MmmaRTL = (sizeof(Tb->out.m_storage) * 8) / 65;
-#else // !NETLIST
+#else  // !NETLIST
 	const size_t MmmaRTL = (sizeof(Tb->out->m_storage) * 8) / 65;
 #endif // !NETLIST
 
-	for(size_t job = 0; job < concurrentJobs.size(); job++)
+	for (size_t job = 0; job < concurrentJobs.size(); job++)
 	{
-		job_t * jobp = &concurrentJobs[job]->Job;
+		job_t *jobp = &concurrentJobs[job]->Job;
 
-		for(size_t m = 0; m < MmmaRTL; m++)
+		for (size_t m = 0; m < MmmaRTL; m++)
 		{
 			// Dispatch Order
 			// Cycle 0			: k = 0, n = 0
@@ -389,15 +439,15 @@ int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool
 			// To add some complications, each SA row is separated into two independent phase-shifted FMAs
 			const bool lInEvenK = (0 == concurrentJobs[job]->JobCycle % FmaCycles_);
 			const bool lInOddK = (0 == (concurrentJobs[job]->JobCycle - 1) % FmaCycles_) && concurrentJobs[job]->JobCycle;
-			if(lInEvenK || lInOddK)
+			if (lInEvenK || lInOddK)
 			{
 				const size_t k = 2 * (concurrentJobs[job]->JobCycle / FmaCycles_) + (lInEvenK ? 0 : 1);
-				if(k < Kmma())
+				if (k < Kmma())
 				{
 #ifdef NETLIST
-					if(setValue(Tb->multLeft.data(), sizeof(Tb->multLeft.m_storage), 65, m * Kmma() + k, jobp->MatA[m * jobp->StrideA + k]))
-#else // !NETLIST
-					if(setValue(Tb->multLeft[0], m * Kmma() + k, jobp->MatA[m * jobp->StrideA + k]))
+					if (setValue(Tb->multLeft.data(), sizeof(Tb->multLeft.m_storage), 65, m * Kmma() + k, jobp->MatA[m * jobp->StrideA + k]))
+#else  // !NETLIST
+					if (setValue(Tb->multLeft[0], m * Kmma() + k, jobp->MatA[m * jobp->StrideA + k]))
 #endif // !NETLIST
 					{
 						sasError("setValue failed\n");
@@ -408,20 +458,20 @@ int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool
 
 			// Right matrix input
 			const size_t nCnt = std::min(concurrentJobs[job]->JobCycle / 2 + 1, Nmma());
-			for(size_t n = 0; n < nCnt; n++)
+			for (size_t n = 0; n < nCnt; n++)
 			{
 				const size_t nJobCycle = concurrentJobs[job]->JobCycle - 2 * n;
 				const bool rInEvenK = (0 == nJobCycle % FmaCycles_);
 				const bool rInOddK = (0 == (nJobCycle - 1) % FmaCycles_) && nJobCycle;
-				if(rInEvenK || rInOddK)
+				if (rInEvenK || rInOddK)
 				{
-					const size_t k = 2 * (nJobCycle / FmaCycles_) + (rInEvenK ? 0: 1);
-					if(k < Kmma())
+					const size_t k = 2 * (nJobCycle / FmaCycles_) + (rInEvenK ? 0 : 1);
+					if (k < Kmma())
 					{
 #ifdef NETLIST
-						if(setValue(Tb->multRight.data(), sizeof(Tb->multRight.m_storage), 65, k, jobp->MatB[k * jobp->StrideB + n]))
-#else // !NETLIST
-						if(setValue(Tb->multRight, k, jobp->MatB[k * jobp->StrideB + n]))
+						if (setValue(Tb->multRight.data(), sizeof(Tb->multRight.m_storage), 65, k, jobp->MatB[k * jobp->StrideB + n]))
+#else  // !NETLIST
+						if (setValue(Tb->multRight, k, jobp->MatB[k * jobp->StrideB + n]))
 #endif // !NETLIST
 						{
 							sasError("setValue failed\n");
@@ -432,15 +482,15 @@ int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool
 			}
 
 			// Acc: Each time a new "n" is added
-			if(0 == (concurrentJobs[job]->JobCycle % 2))
+			if (0 == (concurrentJobs[job]->JobCycle % 2))
 			{
 				const size_t n = concurrentJobs[job]->JobCycle / 2;
-				if(n < Nmma())
+				if (n < Nmma())
 				{
 #ifdef NETLIST
-					if(setValue(Tb->acc.data(), sizeof(Tb->acc.m_storage), 65, m, jobp->MatC[m * jobp->StrideC + n]))
-#else // !NETLIST
-					if(setValue(Tb->acc, m, jobp->MatC[m * jobp->StrideC + n]))
+					if (setValue(Tb->acc.data(), sizeof(Tb->acc.m_storage), 65, m, jobp->MatC[m * jobp->StrideC + n]))
+#else  // !NETLIST
+					if (setValue(Tb->acc, m, jobp->MatC[m * jobp->StrideC + n]))
 #endif // !NETLIST
 					{
 						sasError("setValue failed\n");
@@ -450,20 +500,20 @@ int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool
 			}
 
 			// Gather output
-			if(JobCycleOutputStart_ <= concurrentJobs[job]->JobCycle)
+			if (JobCycleOutputStart_ <= concurrentJobs[job]->JobCycle)
 			{
 				const size_t cycleOffset = concurrentJobs[job]->JobCycle - JobCycleOutputStart_;
-				if(0 == (cycleOffset % 2))
+				if (0 == (cycleOffset % 2))
 				{
 					const size_t n = cycleOffset / 2;
-					if(n > Nmma())
+					if (n > Nmma())
 					{
 						sasError("Unexpected n: Job should have been removed already\n");
 						return -1;
 					}
 #ifdef NETLIST
 					jobp->MatC[m * jobp->StrideC + n] = getValue(Tb->out.data(), sizeof(Tb->out.m_storage), 65, m);
-#else // !NETLIST
+#else  // !NETLIST
 					jobp->MatC[m * jobp->StrideC + n] = getValue(Tb->out, m);
 #endif // !NETLIST
 				}
@@ -471,18 +521,18 @@ int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool
 		}
 	}
 
-	if(JobCycleDone_ == jobs->front().JobCycle)
+	if (JobCycleDone_ == jobs->front().JobCycle)
 	{
 		// Are we only simulating a single column of the SA?
 		// Then calculate the other entries directly
-		if(MmmaRTL != Mmma()) // TODO: This also means fault is always injected into the first SA column!
+		if (MmmaRTL != Mmma()) // TODO: This also means fault is always injected into the first SA column!
 		{
-			job_t * jobp = &jobs->front().Job;
-			for(size_t row = MmmaRTL; row < Mmma(); row++)
+			job_t *jobp = &jobs->front().Job;
+			for (size_t row = MmmaRTL; row < Mmma(); row++)
 			{
-				for(size_t col = 0; col < Nmma(); col++)
+				for (size_t col = 0; col < Nmma(); col++)
 				{
-					for(size_t k = 0; k < Kmma(); k++)
+					for (size_t k = 0; k < Kmma(); k++)
 					{
 						jobp->MatC[row * jobp->StrideC + col] += jobp->MatA[row * jobp->StrideA + k] * jobp->MatB[k * jobp->StrideB + col];
 					}
@@ -492,13 +542,13 @@ int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool
 
 		jobs->pop_front();
 	}
-	else if(JobCycleDone_ < jobs->front().JobCycle)
+	else if (JobCycleDone_ < jobs->front().JobCycle)
 	{
 		sasError("Jobcycle threshold breached (have %lu)!\n", jobs->front().JobCycle);
 		return -4;
 	}
 
-	for(size_t job = 0; job < concurrentJobs.size(); job++)
+	for (size_t job = 0; job < concurrentJobs.size(); job++)
 	{
 		concurrentJobs[job]->JobCycle++;
 	}
@@ -509,16 +559,16 @@ int SystolicArraySim::IoSet(void * TbVoid, std::deque<queueEntry_t> * jobs, bool
 SystolicArraySim::faultRTL_t SystolicArraySim::FiSetRTL(fiMode mode)
 {
 #ifdef NETLIST
-	if(fiMode::None == mode)
+	if (fiMode::None == mode)
 	{
 		sasError("Setting None-fault\n");
 		return faultRTL_t();
 	}
 
-	NetlistFaultInjector * netlistFaultInjector = (NetlistFaultInjector*) NetlistFaultInjectorVoid_;
+	NetlistFaultInjector *netlistFaultInjector = (NetlistFaultInjector *)NetlistFaultInjectorVoid_;
 	size_t fiSignalWidth = 0;
 
-	if(netlistFaultInjector->RandomFiGet(
+	if (netlistFaultInjector->RandomFiGet(
 			&FaultRTL_.ModuleInstanceChain,
 			&FaultRTL_.AssignUUID,
 			&fiSignalWidth))
@@ -529,11 +579,11 @@ SystolicArraySim::faultRTL_t SystolicArraySim::FiSetRTL(fiMode mode)
 
 	FaultRTL_.BitPos = randomBits() % fiSignalWidth;
 
-	if(fiMode::Transient == mode)
+	if (fiMode::Transient == mode)
 	{
 		CycleCnt_ = 0;
 		const size_t cyclesRequired = CyclesRequired(JobQueue_.size());
-		if(0 == cyclesRequired)
+		if (0 == cyclesRequired)
 		{
 			sasError("Trying to set transient fault with empty JobQueue\n");
 			return faultRTL_t();
@@ -545,35 +595,35 @@ SystolicArraySim::faultRTL_t SystolicArraySim::FiSetRTL(fiMode mode)
 	FaultRTL_.Mode = mode;
 
 	sasFaultPrint("Set FaultRTL_:\n\tModule Instance Chain: ");
-	for(const auto &inst: FaultRTL_.ModuleInstanceChain)
+	for (const auto &inst : FaultRTL_.ModuleInstanceChain)
 	{
 		sasFaultPrint("%u, ", inst);
 	}
 	sasFaultPrint("\n\tAssignUUID = %u\n\tBitPos = %u\n\tMode = %i\n",
-			FaultRTL_.AssignUUID, FaultRTL_.BitPos, (int) FaultRTL_.Mode);
+				  FaultRTL_.AssignUUID, FaultRTL_.BitPos, (int)FaultRTL_.Mode);
 
 	return FaultRTL_;
 
-#else // !NETLIST
+#else  // !NETLIST
 	sasError("Only available with NETLIST\n");
 	return faultRTL_t();
 #endif // !NETLIST
 }
 
 SystolicArraySim::faultCsim_t SystolicArraySim::FiSetCsim(
-		fiCsimPlace place,
-		fiBits bits,
-		fiCorruption corruption,
-		fiMode mode)
+	fiCsimPlace place,
+	fiBits bits,
+	fiCorruption corruption,
+	fiMode mode)
 {
-	if((fiCsimPlace::None == place) || (fiBits::None == bits) ||
-			(fiCorruption::None == corruption) || (fiMode::None == mode))
+	if ((fiCsimPlace::None == place) || (fiBits::None == bits) ||
+		(fiCorruption::None == corruption) || (fiMode::None == mode))
 	{
 		sasError("Setting None-fault\n");
 		return faultCsim_t();
 	}
 
-	if(fiCsimPlace::Everywhere == place)
+	if (fiCsimPlace::Everywhere == place)
 	{
 		// Assuming equal distribution across
 		// inputs, Kmma multipliers, Kmma acc adders, 1 final column adder)
@@ -582,15 +632,15 @@ SystolicArraySim::faultCsim_t SystolicArraySim::FiSetCsim(
 		// coverity[DC.WEAK_CRYPTO]
 		const int randNr = rand();
 		const int FractionRandMax = RAND_MAX / (2 * Kmma() + 1);
-		if(randNr < Kmma() * FractionRandMax)
+		if (randNr < Kmma() * FractionRandMax)
 		{
 			FaultCsim_.Place = fiCsimPlace::Multipliers;
 		}
-		else if(randNr < 2 * Kmma() * FractionRandMax)
+		else if (randNr < 2 * Kmma() * FractionRandMax)
 		{
 			FaultCsim_.Place = fiCsimPlace::AccAdders;
 		}
-		else if(randNr < (2 * Kmma() + 1) * FractionRandMax)
+		else if (randNr < (2 * Kmma() + 1) * FractionRandMax)
 		{
 			FaultCsim_.Place = fiCsimPlace::ColumnAdders;
 		}
@@ -606,7 +656,7 @@ SystolicArraySim::faultCsim_t SystolicArraySim::FiSetCsim(
 
 	FaultCsim_.Corruption = corruption;
 
-	if(fiMode::Transient == mode)
+	if (fiMode::Transient == mode)
 	{
 		CycleCnt_ = 0;
 		const size_t totalJobQueueCycles = JobQueue_.size() * Nmma();
@@ -616,7 +666,7 @@ SystolicArraySim::faultCsim_t SystolicArraySim::FiSetCsim(
 
 	FaultCsim_.Mode = mode;
 
-	switch(bits)
+	switch (bits)
 	{
 	default: // no break intended
 	case fiBits::None:
@@ -638,15 +688,15 @@ SystolicArraySim::faultCsim_t SystolicArraySim::FiSetCsim(
 	FaultCsim_.Row = rand() % Mmma();
 
 	sasFaultPrint("Set FaultCsim_: Place %i, Corruption %i, fiMode %i, Column %u, BitPos %u\n",
-			to_integer(FaultCsim_.Place), to_integer(FaultCsim_.Corruption),
-			to_integer(FaultCsim_.Mode), FaultCsim_.Row, FaultCsim_.BitPos);
+				  to_integer(FaultCsim_.Place), to_integer(FaultCsim_.Corruption),
+				  to_integer(FaultCsim_.Mode), FaultCsim_.Row, FaultCsim_.BitPos);
 
 	return FaultCsim_;
 }
 
 int SystolicArraySim::FiResetRTL()
 {
-	if(fiMode::None == FaultRTL_.Mode)
+	if (fiMode::None == FaultRTL_.Mode)
 	{
 		sasError("No fault was set!\n");
 		return -1;
@@ -660,7 +710,7 @@ int SystolicArraySim::FiResetRTL()
 
 int SystolicArraySim::FiResetCsim()
 {
-	if(fiCsimPlace::None == FaultCsim_.Place)
+	if (fiCsimPlace::None == FaultCsim_.Place)
 	{
 		sasError("No fault was set!\n");
 		return -1;
@@ -674,14 +724,14 @@ int SystolicArraySim::FiResetCsim()
 
 static double corrupt(double in, SystolicArraySim::fiCorruption corruption, uint8_t bitPos)
 {
-	if(63 < bitPos)
+	if (63 < bitPos)
 	{
 		sasError("bitPos > 64\n");
 		return NAN;
 	}
 
 	doubleUnion inU64 = {in};
-	switch(corruption)
+	switch (corruption)
 	{
 	default: // no break intended
 	case SystolicArraySim::fiCorruption::None:
@@ -707,38 +757,41 @@ static double corrupt(double in, SystolicArraySim::fiCorruption corruption, uint
 
 // out = out + A_1 * B_1 + ... + A_8 * B_8
 // fi = nullptr if no fault injection intended
-int SystolicArraySim::RowCsim(double * out, double * a, double * b, const faultCsim_t * fi) const
+int SystolicArraySim::RowCsim(double *out, double *a, double *b, const faultCsim_t *fi) const
 {
 	// coverity[DC.WEAK_CRYPTO]
 	int kFi = rand() % Kmma();
 
-	for(size_t k = 0; k < Kmma(); k++)
+	for (size_t k = 0; k < Kmma(); k++)
 	{
-		if((k == kFi) && (nullptr != fi))
+		if ((k == kFi) && (nullptr != fi))
 		{
 			// Inputs
 			double accIn = *out;
 			double aIn = a[k];
 			double bIn = b[k];
-			if(fiCsimPlace::Multipliers == fi->Place)
+			if (fiCsimPlace::Multipliers == fi->Place)
 			{
 				// coverity[DC.WEAK_CRYPTO]
 				size_t inRand = rand() % 3;
-				if(0 == inRand) accIn = corrupt(*out, fi->Corruption, fi->BitPos);
-				else if(1 == inRand) aIn = corrupt(aIn, fi->Corruption, fi->BitPos);
-				else bIn = corrupt(bIn, fi->Corruption, fi->BitPos);
+				if (0 == inRand)
+					accIn = corrupt(*out, fi->Corruption, fi->BitPos);
+				else if (1 == inRand)
+					aIn = corrupt(aIn, fi->Corruption, fi->BitPos);
+				else
+					bIn = corrupt(bIn, fi->Corruption, fi->BitPos);
 			}
 
 			// Mul
 			double mul = aIn * bIn;
-			if(fiCsimPlace::Multipliers == fi->Place)
+			if (fiCsimPlace::Multipliers == fi->Place)
 			{
 				mul = corrupt(mul, fi->Corruption, fi->BitPos);
 			}
 
 			// Acc Add
 			double acc = mul + accIn;
-			if(fiCsimPlace::AccAdders == fi->Place)
+			if (fiCsimPlace::AccAdders == fi->Place)
 			{
 				acc = corrupt(acc, fi->Corruption, fi->BitPos);
 			}
@@ -749,9 +802,9 @@ int SystolicArraySim::RowCsim(double * out, double * a, double * b, const faultC
 		}
 	}
 
-	if((nullptr != fi) && (fiCsimPlace::ColumnAdders == fi->Place))
+	if ((nullptr != fi) && (fiCsimPlace::ColumnAdders == fi->Place))
 	{
-		*out =  corrupt(*out, fi->Corruption, fi->BitPos);
+		*out = corrupt(*out, fi->Corruption, fi->BitPos);
 	}
 
 	return 0;
@@ -760,21 +813,21 @@ int SystolicArraySim::RowCsim(double * out, double * a, double * b, const faultC
 int SystolicArraySim::ExecCsim(size_t maxJobs)
 {
 	const size_t origJobs = JobQueue_.size();
-	while(!JobQueue_.empty() && (origJobs - JobQueue_.size() < maxJobs))
+	while (!JobQueue_.empty() && (origJobs - JobQueue_.size() < maxJobs))
 	{
 		// JobCycle = col for c sim
-		job_t * job = &JobQueue_.front().Job;
+		job_t *job = &JobQueue_.front().Job;
 		const size_t col = JobQueue_.front().JobCycle;
 
 		// Calculate non-simulated cols
-		for(size_t row = 0; row < Mmma(); row++)
+		for (size_t row = 0; row < Mmma(); row++)
 		{
-			if(FaultCsim_.Row == row)
+			if (FaultCsim_.Row == row)
 			{
 				continue;
 			}
 
-			for(size_t sum = 0; sum < Kmma(); sum++)
+			for (size_t sum = 0; sum < Kmma(); sum++)
 			{
 				job->MatC[row * job->StrideC + col] += job->MatA[row * job->StrideA + sum] * job->MatB[sum * job->StrideB + col];
 			}
@@ -783,14 +836,14 @@ int SystolicArraySim::ExecCsim(size_t maxJobs)
 		// Calculate simulated row
 		std::vector<double> leftIn(Kmma());
 		std::vector<double> rightIn(Kmma());
-		for(size_t sum = 0; sum < Kmma(); sum++)
+		for (size_t sum = 0; sum < Kmma(); sum++)
 		{
 			leftIn[sum] = job->MatA[FaultCsim_.Row * job->StrideA + sum];
 			rightIn[sum] = job->MatB[sum * job->StrideB + col];
 		}
 
-		const faultCsim_t * colCsimFi = ((CycleCnt_ == FaultCsimTransCycle_) || (fiMode::Permanent == FaultCsim_.Mode)) ? &FaultCsim_ : nullptr;
-		if(RowCsim(&job->MatC[FaultCsim_.Row * job->StrideC + col], leftIn.data(), rightIn.data(), colCsimFi))
+		const faultCsim_t *colCsimFi = ((CycleCnt_ == FaultCsimTransCycle_) || (fiMode::Permanent == FaultCsim_.Mode)) ? &FaultCsim_ : nullptr;
+		if (RowCsim(&job->MatC[FaultCsim_.Row * job->StrideC + col], leftIn.data(), rightIn.data(), colCsimFi))
 		{
 			sasError("ColCsim failed\n");
 			return -1;
@@ -798,7 +851,7 @@ int SystolicArraySim::ExecCsim(size_t maxJobs)
 
 		CycleCnt_++;
 		JobQueue_.front().JobCycle++;
-		if(JobQueue_.front().JobCycle >= Nmma())
+		if (JobQueue_.front().JobCycle >= Nmma())
 		{
 			JobQueue_.pop_front();
 		}
@@ -807,15 +860,15 @@ int SystolicArraySim::ExecCsim(size_t maxJobs)
 	return 0;
 }
 
-int SystolicArraySim::FiRtlApply(void * TbVoid, const std::vector<uint16_t> &modInst, uint32_t assignNr, size_t fiBit)
+int SystolicArraySim::FiRtlApply(void *TbVoid, const std::vector<uint16_t> &modInst, uint32_t assignNr, size_t fiBit)
 {
 #ifdef NETLIST
-	testBench_t * Tb = (testBench_t*) TbVoid;
+	testBench_t *Tb = (testBench_t *)TbVoid;
 
 	// Set instance chain
-	for(size_t inst = 0; inst < sizeof(Tb->GlobalFiModInstNr) / sizeof(Tb->GlobalFiModInstNr[0]); inst++)
+	for (size_t inst = 0; inst < sizeof(Tb->GlobalFiModInstNr) / sizeof(Tb->GlobalFiModInstNr[0]); inst++)
 	{
-		if(modInst.size() > inst)
+		if (modInst.size() > inst)
 		{
 			Tb->GlobalFiModInstNr[inst] = modInst[inst];
 		}
@@ -837,7 +890,7 @@ int SystolicArraySim::FiRtlApply(void * TbVoid, const std::vector<uint16_t> &mod
 
 	Tb->GlobalFiSignal.m_storage[arrayIndex] = 1UL << arrayBit;
 
-#else // !NETLIST
+#else  // !NETLIST
 	sasError("Only available with NETLIST\n");
 	return -1;
 #endif // !NETLIST
@@ -845,19 +898,19 @@ int SystolicArraySim::FiRtlApply(void * TbVoid, const std::vector<uint16_t> &mod
 	return 0;
 }
 
-int SystolicArraySim::FiRtlReset(void * TbVoid)
+int SystolicArraySim::FiRtlReset(void *TbVoid)
 {
 #ifdef NETLIST
-	testBench_t * Tb = (testBench_t*) TbVoid;
+	testBench_t *Tb = (testBench_t *)TbVoid;
 
-	for(size_t inst = 0; inst < sizeof(Tb->GlobalFiModInstNr) / sizeof(Tb->GlobalFiModInstNr[0]); inst++)
+	for (size_t inst = 0; inst < sizeof(Tb->GlobalFiModInstNr) / sizeof(Tb->GlobalFiModInstNr[0]); inst++)
 	{
 		Tb->GlobalFiModInstNr[inst] = 0;
 	}
 
 	return 0;
 
-#else // !NETLIST
+#else  // !NETLIST
 	return 0;
 #endif // !NETLIST
 }
@@ -866,13 +919,13 @@ bool SystolicArraySim::JobQueueReadBeforeWrite(const std::deque<queueEntry_t> &j
 {
 	const size_t jobsInPipe = JobCycleDone_ / JobCyclePassedFirstStage_;
 
-	for(size_t job = 0; job < jobQueue.size(); job++)
+	for (size_t job = 0; job < jobQueue.size(); job++)
 	{
-		for(size_t nextJob = job + 1; nextJob < std::min(job + jobsInPipe, jobQueue.size()); nextJob++)
+		for (size_t nextJob = job + 1; nextJob < std::min(job + jobsInPipe, jobQueue.size()); nextJob++)
 		{
-			if((jobQueue[job].Job.MatC == jobQueue[nextJob].Job.MatA) ||
-					(jobQueue[job].Job.MatC == jobQueue[nextJob].Job.MatB) ||
-					jobQueue[job].Job.MatC == jobQueue[nextJob].Job.MatC)
+			if ((jobQueue[job].Job.MatC == jobQueue[nextJob].Job.MatA) ||
+				(jobQueue[job].Job.MatC == jobQueue[nextJob].Job.MatB) ||
+				jobQueue[job].Job.MatC == jobQueue[nextJob].Job.MatC)
 			{
 				return true;
 			}
@@ -885,41 +938,41 @@ bool SystolicArraySim::JobQueueReadBeforeWrite(const std::deque<queueEntry_t> &j
 int SystolicArraySim::ExecRtl(bool fastTransient, bool fastTransientTest)
 {
 	// Run sanity check on jobqueue
-	if(JobQueueReadBeforeWrite(JobQueue_))
+	if (JobQueueReadBeforeWrite(JobQueue_))
 	{
 		sasError("Read before write in jobqueue\n");
 		return -1;
 	}
 
 	// Set permanent fault if enabled
-	if(fiMode::Permanent == FaultRTL_.Mode)
+	if (fiMode::Permanent == FaultRTL_.Mode)
 	{
-		if(FiRtlApply(TbVoid_, FaultRTL_.ModuleInstanceChain, FaultRTL_.AssignUUID, FaultRTL_.BitPos))
+		if (FiRtlApply(TbVoid_, FaultRTL_.ModuleInstanceChain, FaultRTL_.AssignUUID, FaultRTL_.BitPos))
 		{
 			sasError("FiRtlApply failed\n");
 			return -1;
 		}
 	}
-	else if(FiRtlReset(TbVoid_))
+	else if (FiRtlReset(TbVoid_))
 	{
 		sasError("FiRtlReset failed\n");
 		return -1;
 	}
 
 	// Skip jobs before transient fault happens
-	if((fiMode::Transient == FaultRTL_.Mode) && fastTransient)
+	if ((fiMode::Transient == FaultRTL_.Mode) && fastTransient)
 	{
 		const size_t jobsBefore = FaultRTLTransCycle_ > JobCycleDone_ ? JobsDoneInCycles(FaultRTLTransCycle_ - JobCycleDone_) : 0;
-		if(jobsBefore)
+		if (jobsBefore)
 		{
-			if(ExecCsim(jobsBefore))
+			if (ExecCsim(jobsBefore))
 			{
 				sasError("ExecCsim failed\n");
 				return -1;
 			}
 
 			// reset cycle cnt
-			for(auto &job: JobQueue_)
+			for (auto &job : JobQueue_)
 			{
 				job.JobCycle = 0;
 			}
@@ -932,44 +985,52 @@ int SystolicArraySim::ExecRtl(bool fastTransient, bool fastTransientTest)
 	}
 
 	// Start the actual simulation
-	testBench_t * Tb = (testBench_t*) TbVoid_;
+	testBench_t *Tb = (testBench_t *)TbVoid_;
 
 #ifdef NETLIST
 	const size_t MmmaRTL = (sizeof(Tb->out.m_storage) * 8) / 65;
-#else // !NETLIST
+#else  // !NETLIST
 	const size_t MmmaRTL = (sizeof(Tb->out->m_storage) * 8) / 65;
 #endif // !NETLIST
 
-	if(MmmaRTL != Mmma())
+	if (MmmaRTL != Mmma())
 	{
 		sasDebug("RTL simulation running for %lu SA-columns out of %lu\n", MmmaRTL, Mmma());
 	}
 
+#ifdef VERILATOR_DUMP_VCD
+	if (nullptr != myDumpTrace_ && 0 == CycleCnt_)
+	{
+		// dump the vcd if you have to and it dumps the initial values of signals (kind of dumpports)
+		static_cast<VerilatedVcdC *>(myDumpTrace_)->dump(CycleCnt_);
+	}
+#endif /*VERILATOR_DUMP_VCD*/
+
 	// Perform simulation for chosen channel
 	Tb->clk = 1;
-	while(!JobQueue_.empty())
+	while (!JobQueue_.empty())
 	{
 		Tb->clk = Tb->clk ? 0 : 1;
 
-		if(IoSet(Tb, &JobQueue_, Tb->clk))
+		if (IoSet(Tb, &JobQueue_, Tb->clk))
 		{
 			sasError("inputSet failed\n");
 			return -1;
 		}
 
 		// Fault injection
-		if(fiMode::Transient == FaultRTL_.Mode)
+		if (fiMode::Transient == FaultRTL_.Mode)
 		{
-			if(CycleCnt_ == FaultRTLTransCycle_)
+			if (CycleCnt_ == FaultRTLTransCycle_)
 			{
 				sasDebug("Cycle %lu: Setting transient fault\n", CycleCnt_);
-				if(!fastTransientTest && FiRtlApply(TbVoid_, FaultRTL_.ModuleInstanceChain, FaultRTL_.AssignUUID, FaultRTL_.BitPos))
+				if (!fastTransientTest && FiRtlApply(TbVoid_, FaultRTL_.ModuleInstanceChain, FaultRTL_.AssignUUID, FaultRTL_.BitPos))
 				{
 					sasError("FiRtlApply failed\n");
 					return -1;
 				}
 			}
-			else if(FiRtlReset(TbVoid_))
+			else if (FiRtlReset(TbVoid_))
 			{
 				sasError("FiRtlReset failed\n");
 				return -1;
@@ -979,63 +1040,69 @@ int SystolicArraySim::ExecRtl(bool fastTransient, bool fastTransientTest)
 #if DEBUG_VERBOSE
 		sasDebug("cycle = %lu:%s:\n", CycleCnt_, Tb->clk ? "H" : "L");
 		sasDebug("\tout =");
-		for(size_t m = 0; m < Mmma(); m++)
+		for (size_t m = 0; m < Mmma(); m++)
 		{
 			sasDebug("%.10f, ", getValue(Tb->out.data(), sizeof(Tb->out.m_storage), 65, m));
 		}
 		sasDebug("\n");
-		printBinary((uint8_t*) Tb->out.data(), 130);
+		printBinary((uint8_t *)Tb->out.data(), 130);
 		sasInfo("\n");
 
 		sasDebug("cycle = %lu:%s:\n", CycleCnt_, Tb->clk ? "H" : "L");
-		sasDebug("\tout = %.10e\n", getValue(Tb->out, 0));
+		sasDebug("\tout = %.10e\n", getValue(&Tb->out, 0));
 		sasDebug("\tmulLeft = \n");
-		for(size_t row = 0; row < Mmma(); row++)
+		for (size_t row = 0; row < Mmma(); row++)
 		{
 			sasDebug("\t\t");
-			for(size_t k = 0; k < Kmma(); k++)
+			for (size_t k = 0; k < Kmma(); k++)
 			{
-				sasDebug("%f,", getValue(Tb->multLeft[0], row * Kmma() + k));
+				sasDebug("%f,", getValue(&Tb->multLeft[0], row * Kmma() + k));
 			}
 			sasDebug("\n");
 		}
 
 		sasDebug("\tmulRight = \n");
 		sasDebug("\t\t");
-		for(size_t k = 0; k < Kmma(); k++)
+		for (size_t k = 0; k < Kmma(); k++)
 		{
-			sasDebug("%f,", getValue(Tb->multRight, k));
+			sasDebug("%f,", getValue(&Tb->multRight, k));
 		}
 		sasDebug("\n");
 
 		sasDebug("\tacc = \n");
 		sasDebug("\t\t");
-		for(size_t m = 0; m < Mmma(); m++)
+		for (size_t m = 0; m < Mmma(); m++)
 		{
-			sasDebug("%f,", getValue(Tb->acc, m));
+			sasDebug("%f,", getValue(&Tb->acc, m));
 		}
 		sasDebug("\n");
 
 		sasDebug("\tfmaAccOut:\n\t\t");
-		for(size_t k = 0; k < Kmma() - 1; k++)
-		{
-			sasDebug("%.10e, ", getValue(Tb->rootp->SystolicArray__DOT__fma_m__BRA__0__KET____DOT__fmaAccOut.m_storage, k));
-		}
-		sasDebug("\n");
-
-		sasDebug("cycle = %lu:%s, dpdpas_dv = %i; out = (%f, %f, %f, %f, %f, %f, %f, %f)\n",
-				CycleCnt_, Tb->gcreudpasclk ? "H" : "L", Tb->ga_dpdpas_dv,
-						getValue(Tb->dpdpas_result, 0), getValue(Tb->dpdpas_result, 1), getValue(Tb->dpdpas_result, 2), getValue(Tb->dpdpas_result, 3),
-						getValue(Tb->dpdpas_result, 4), getValue(Tb->dpdpas_result, 5), getValue(Tb->dpdpas_result, 6), getValue(Tb->dpdpas_result, 7));
+		/*	for (size_t k = 0; k < Kmma() - 1; k++)
+			{
+				sasDebug("%.10e, ", getValue(Tb->rootp->SystolicArray__DOT__fma_m__BRA__0__KET____DOT__fmaAccOut.m_storage, k));
+			}
+			sasDebug("\n");
+	*/
+		/*sasDebug("cycle = %lu:%s, dpdpas_dv = %i; out = (%f, %f, %f, %f, %f, %f, %f, %f)\n",
+				 CycleCnt_, Tb->gcreudpasclk ? "H" : "L", Tb->ga_dpdpas_dv,
+				 getValue(Tb->dpdpas_result, 0), getValue(Tb->dpdpas_result, 1), getValue(Tb->dpdpas_result, 2), getValue(Tb->dpdpas_result, 3),
+				 getValue(Tb->dpdpas_result, 4), getValue(Tb->dpdpas_result, 5), getValue(Tb->dpdpas_result, 6), getValue(Tb->dpdpas_result, 7));*/
 #endif // DEBUG_VERBOSE
 
 		CycleCnt_++;
 
 		Tb->eval();
-
-		if(Tb->error)
+#ifdef VERILATOR_DUMP_VCD
+		if (nullptr != myDumpTrace_)
 		{
-			if(false == DieError_)
+			/*dump the vcd if you have to*/
+			static_cast<VerilatedVcdC *>(myDumpTrace_)->dump(CycleCnt_);
+		}
+#endif /*VERILATOR_DUMP_VCD*/
+		if (Tb->error)
+		{
+			if (false == DieError_)
 			{
 				sasDebug("dpdpas_dierr set!\n");
 			}
@@ -1044,15 +1111,15 @@ int SystolicArraySim::ExecRtl(bool fastTransient, bool fastTransientTest)
 		}
 
 		// Run c-model if transient fault was "flushed" out
-		if((fiMode::Transient == FaultRTL_.Mode) && fastTransient)
+		if ((fiMode::Transient == FaultRTL_.Mode) && fastTransient)
 		{
 			// Make sure rtl simulation hasn't output anything on the front job yet
-			if((CycleCnt_ > FaultRTLTransCycle_ + JobCycleDone_ + 1) && (JobQueue_.front().JobCycle < JobCycleOutputStart_))
+			if ((CycleCnt_ > FaultRTLTransCycle_ + JobCycleDone_ + 1) && (JobQueue_.front().JobCycle < JobCycleOutputStart_))
 			{
 				sasDebug("Cycle %lu: fastTransient: Skip remaining jobs\n", CycleCnt_);
 
 				// reset cycle cnt
-				for(auto &job: JobQueue_)
+				for (auto &job : JobQueue_)
 				{
 					job.JobCycle = 0;
 				}
@@ -1068,7 +1135,7 @@ int SystolicArraySim::ExecRtl(bool fastTransient, bool fastTransientTest)
 
 static std::shared_ptr<double[]> randomMatrix(size_t M, size_t N, size_t stride)
 {
-	if(stride < N)
+	if (stride < N)
 	{
 		sasError("Stride can't be smaller than N\n");
 		return nullptr;
@@ -1076,14 +1143,14 @@ static std::shared_ptr<double[]> randomMatrix(size_t M, size_t N, size_t stride)
 
 	const size_t elementCnt = M * stride;
 	std::shared_ptr<double[]> out(new double[elementCnt]);
-	if(nullptr == out)
+	if (nullptr == out)
 	{
 		sasError("malloc failed\n");
 		return nullptr;
 	}
 
 	// might as well set all values to something
-	for(size_t index = 0; index < elementCnt; index++)
+	for (size_t index = 0; index < elementCnt; index++)
 	{
 		out[index] = randomDouble(-unitTestExponentRange, unitTestExponentRange, 0.1);
 	}
@@ -1092,7 +1159,7 @@ static std::shared_ptr<double[]> randomMatrix(size_t M, size_t N, size_t stride)
 }
 
 template <typename T>
-static bool resultCorrect(const double * expected, T got, size_t rowCnt, size_t colCnt)
+static bool resultCorrect(const double *expected, T got, size_t rowCnt, size_t colCnt)
 {
 #if SAS_DEBUG
 	double largestDiff = 0;
@@ -1104,12 +1171,12 @@ static bool resultCorrect(const double * expected, T got, size_t rowCnt, size_t 
 	double largestRelDiffActualVal = NAN;
 #endif // SAS_DEBUG
 
-	for(size_t index = 0; index < rowCnt * colCnt; index++)
+	for (size_t index = 0; index < rowCnt * colCnt; index++)
 	{
 		const double diff = fabs(expected[index] - got[index]);
 
 #if SAS_DEBUG
-		if(largestDiff < diff)
+		if (largestDiff < diff)
 		{
 			largestDiff = diff;
 			largestDiffExpectedVal = expected[index];
@@ -1120,8 +1187,8 @@ static bool resultCorrect(const double * expected, T got, size_t rowCnt, size_t 
 		const double relDiff = diff / fabsf(expected[index]);
 
 #if SAS_DEBUG
-		if((largestRelDiff < relDiff) &&
-				((relDiff != std::numeric_limits<double>::infinity()) || (expected[index] != 0))) // Inf is only an error if expected != 0
+		if ((largestRelDiff < relDiff) &&
+			((relDiff != std::numeric_limits<double>::infinity()) || (expected[index] != 0))) // Inf is only an error if expected != 0
 		{
 			largestRelDiff = relDiff;
 			largestRelDiffExpectedVal = expected[index];
@@ -1129,15 +1196,15 @@ static bool resultCorrect(const double * expected, T got, size_t rowCnt, size_t 
 		}
 #endif // SAS_DEBUG
 
-		if(relDiff > unitTestRelTolerance)
+		if (relDiff > unitTestRelTolerance)
 		{
 			sasError("Index %lu (row %lu, col %lu): Got %f, expected %f (diff %.*f, rel. diff %.*f)\n",
-					index, index / colCnt, index % colCnt, got[index], expected[index],
-					DBL_DECIMAL_DIG, diff, DBL_DECIMAL_DIG, relDiff);
+					 index, index / colCnt, index % colCnt, got[index], expected[index],
+					 DBL_DECIMAL_DIG, diff, DBL_DECIMAL_DIG, relDiff);
 
 #if DEBUG_VERBOSE
 			sasDebug("Got:\n");
-			matrixPrint(matC, rowCnt, colCnt, colCnt);
+			// matrixPrint(matC, rowCnt, colCnt, colCnt);
 			sasDebug("Expected:\n");
 			matrixPrint(expected, rowCnt, colCnt, colCnt);
 #endif // DEBUG_VERBOSE
@@ -1147,8 +1214,8 @@ static bool resultCorrect(const double * expected, T got, size_t rowCnt, size_t 
 	}
 
 	sasDebug("Largest Rel. Diff %.*f (valExp %f, valAct %f), Abs. Diff %.*f (valExp %f, valAct %f)\n",
-			DBL_DECIMAL_DIG, largestRelDiff,	largestRelDiffExpectedVal, largestRelDiffActualVal,
-			DBL_DECIMAL_DIG, largestDiff,	largestDiffExpectedVal, largestDiffActualVal);
+			 DBL_DECIMAL_DIG, largestRelDiff, largestRelDiffExpectedVal, largestRelDiffActualVal,
+			 DBL_DECIMAL_DIG, largestDiff, largestDiffExpectedVal, largestDiffActualVal);
 
 	return true;
 }
@@ -1166,44 +1233,44 @@ int SystolicArraySim::MmaTest(size_t mCnt, size_t nCnt, bool cSim, bool fiEn, bo
 
 	std::vector<double> expected(rowCnt * colCnt);
 	memcpy(expected.data(), matC.get(), sizeof(double) * rowCnt * colCnt);
-	for(size_t row = 0; row < rowCnt; row++)
+	for (size_t row = 0; row < rowCnt; row++)
 	{
-		for(size_t col = 0; col < colCnt; col++)
+		for (size_t col = 0; col < colCnt; col++)
 		{
-			for(size_t sum = 0; sum < sysArraySim.Kmma(); sum++)
+			for (size_t sum = 0; sum < sysArraySim.Kmma(); sum++)
 			{
 				expected[row * colCnt + col] += matA[row * sysArraySim.Kmma() + sum] * matB[sum * colCnt + col];
 			}
 		}
 	}
 
-	for(size_t jobm = 0; jobm < mCnt; jobm++)
+	for (size_t jobm = 0; jobm < mCnt; jobm++)
 	{
-		for(size_t jobn = 0; jobn < nCnt; jobn++)
+		for (size_t jobn = 0; jobn < nCnt; jobn++)
 		{
 			job_t jobStr = {
-					matA.get() + jobm * sysArraySim.Mmma() * sysArraySim.Kmma(), sysArraySim.Kmma(),
-					matB.get() + jobn * sysArraySim.Nmma(), nCnt * sysArraySim.Nmma(),
-					matC.get() + jobm * sysArraySim.Mmma() * nCnt * sysArraySim.Nmma() + jobn * sysArraySim.Nmma(), nCnt * sysArraySim.Nmma()};
+				matA.get() + jobm * sysArraySim.Mmma() * sysArraySim.Kmma(), sysArraySim.Kmma(),
+				matB.get() + jobn * sysArraySim.Nmma(), nCnt * sysArraySim.Nmma(),
+				matC.get() + jobm * sysArraySim.Mmma() * nCnt * sysArraySim.Nmma() + jobn * sysArraySim.Nmma(), nCnt * sysArraySim.Nmma()};
 
 			sysArraySim.DispatchMma(jobStr);
 		}
 	}
 
 	faultRTL_t faultRTL;
-	if(fiEn)
+	if (fiEn)
 	{
 		faultRTL = sysArraySim.FiSetRTL(fiMode::Transient);
-		if(fiMode::None == faultRTL.Mode)
+		if (fiMode::None == faultRTL.Mode)
 		{
 			sasError("FiSetRTL failed\n");
 			return -1;
 		}
 	}
 
-	if(cSim)
+	if (cSim)
 	{
-		if(sysArraySim.ExecCsim())
+		if (sysArraySim.ExecCsim())
 		{
 			sasError("ExecCsim failed\n");
 			return -1;
@@ -1211,13 +1278,13 @@ int SystolicArraySim::MmaTest(size_t mCnt, size_t nCnt, bool cSim, bool fiEn, bo
 	}
 	else
 	{
-		if(sysArraySim.ExecRtl(fastTrans, FastTransTest))
+		if (sysArraySim.ExecRtl(fastTrans, FastTransTest))
 		{
 			sasError("ExecCycle failed\n");
 			return -1;
 		}
 
-		if(!fiEn && sysArraySim.ErrorDetected())
+		if (!fiEn && sysArraySim.ErrorDetected())
 		{
 			sasError("False positive error detected\n");
 			return -1;
@@ -1225,7 +1292,7 @@ int SystolicArraySim::MmaTest(size_t mCnt, size_t nCnt, bool cSim, bool fiEn, bo
 	}
 
 	// Check if result correct
-	if(!resultCorrect(expected.data(), matC, rowCnt, colCnt))
+	if (!resultCorrect(expected.data(), matC, rowCnt, colCnt))
 	{
 		sasError("Output not correct\n");
 		return -1;
@@ -1244,11 +1311,11 @@ int SystolicArraySim::TileTest(bool cSim)
 
 	std::vector<double> expected(sysArraySim.Mtile() * sysArraySim.Ntile());
 	memcpy(expected.data(), matC.get(), sizeof(double) * sysArraySim.Mtile() * sysArraySim.Ntile());
-	for(size_t row = 0; row < sysArraySim.Mtile(); row++)
+	for (size_t row = 0; row < sysArraySim.Mtile(); row++)
 	{
-		for(size_t col = 0; col < sysArraySim.Ntile(); col++)
+		for (size_t col = 0; col < sysArraySim.Ntile(); col++)
 		{
-			for(size_t sum = 0; sum < sysArraySim.Ktile(); sum++)
+			for (size_t sum = 0; sum < sysArraySim.Ktile(); sum++)
 			{
 				expected[row * sysArraySim.Ntile() + col] += matA[row * sysArraySim.Ktile() + sum] * matB[sum * sysArraySim.Ntile() + col];
 			}
@@ -1256,16 +1323,15 @@ int SystolicArraySim::TileTest(bool cSim)
 	}
 
 	job_t job = {
-			matA.get(), sysArraySim.Ktile(),
-			matB.get(), sysArraySim.Ntile(),
-			matC.get(), sysArraySim.Ntile()
-	};
+		matA.get(), sysArraySim.Ktile(),
+		matB.get(), sysArraySim.Ntile(),
+		matC.get(), sysArraySim.Ntile()};
 
 	sysArraySim.DispatchTile(job);
 
-	if(cSim)
+	if (cSim)
 	{
-		if(sysArraySim.ExecCsim())
+		if (sysArraySim.ExecCsim())
 		{
 			sasError("ExecCsim failed\n");
 			return -1;
@@ -1273,7 +1339,7 @@ int SystolicArraySim::TileTest(bool cSim)
 	}
 	else
 	{
-		if(sysArraySim.ExecRtl())
+		if (sysArraySim.ExecRtl())
 		{
 			sasError("ExecCycle failed\n");
 			return -1;
@@ -1281,7 +1347,7 @@ int SystolicArraySim::TileTest(bool cSim)
 	}
 
 	// Check if result correct
-	if(!resultCorrect(expected.data(), matC, sysArraySim.Mtile(), sysArraySim.Ntile()))
+	if (!resultCorrect(expected.data(), matC, sysArraySim.Mtile(), sysArraySim.Ntile()))
 	{
 		sasError("Output not correct\n");
 		return -1;
@@ -1306,33 +1372,32 @@ int SystolicArraySim::MultiMmaTest(bool cSim)
 
 	// Prepare output
 	std::vector<double> out(M * N);
-	for(size_t row = 0; row < M; row++)
+	for (size_t row = 0; row < M; row++)
 	{
-		for(size_t col = 0; col < N; col++)
+		for (size_t col = 0; col < N; col++)
 		{
 			out[row * N + col] = Crand[row * N + col];
 		}
 	}
 
 	// Dispatch to SA
-	for(long sum = 0; sum + sysArraySim.Kmma() <= K; sum += sysArraySim.Kmma())
+	for (long sum = 0; sum + sysArraySim.Kmma() <= K; sum += sysArraySim.Kmma())
 	{
 		SystolicArraySim::job_t job = {
-				Arand.get() + sum, K,
-				Brand.get() + sum * N, N,
-				out.data(), N};
+			Arand.get() + sum, K,
+			Brand.get() + sum * N, N,
+			out.data(), N};
 
-
-		if(sysArraySim.DispatchMma(job, MmaMultipleCnt, MmaMultipleCnt))
+		if (sysArraySim.DispatchMma(job, MmaMultipleCnt, MmaMultipleCnt))
 		{
 			sasError("DispatchMma failed\n");
 			return -5;
 		}
 	}
 
-	if(!cSim)
+	if (!cSim)
 	{
-		if(sysArraySim.ExecRtl(false, false))
+		if (sysArraySim.ExecRtl(false, false))
 		{
 			sasError("ExecRtl failed\n");
 			return -6;
@@ -1340,7 +1405,7 @@ int SystolicArraySim::MultiMmaTest(bool cSim)
 	}
 	else
 	{
-		if(sysArraySim.ExecCsim())
+		if (sysArraySim.ExecCsim())
 		{
 			sasError("ExecCsim failed\n");
 			return -6;
@@ -1349,13 +1414,13 @@ int SystolicArraySim::MultiMmaTest(bool cSim)
 
 	// Calculate expected result
 	std::vector<double> expected(M * N);
-	for(size_t row = 0; row < M; row++)
+	for (size_t row = 0; row < M; row++)
 	{
-		for(size_t col = 0; col < N; col++)
+		for (size_t col = 0; col < N; col++)
 		{
 			expected[row * N + col] = Crand[row * N + col];
 
-			for(size_t sum = 0; sum < K; sum++)
+			for (size_t sum = 0; sum < K; sum++)
 			{
 				expected[row * N + col] += Arand[row * K + sum] * Brand[sum * N + col];
 			}
@@ -1363,7 +1428,7 @@ int SystolicArraySim::MultiMmaTest(bool cSim)
 	}
 
 	// Check if result correct
-	if(!resultCorrect(expected.data(), out.data(), M, N))
+	if (!resultCorrect(expected.data(), out.data(), M, N))
 	{
 		sasError("Output not correct\n");
 		return -1;
@@ -1372,7 +1437,7 @@ int SystolicArraySim::MultiMmaTest(bool cSim)
 	return 0;
 }
 
-int SystolicArraySim::GemmTest(bool cSim, const double * matA, const double * matB, const double * matC, size_t M, size_t K, size_t N)
+int SystolicArraySim::GemmTest(bool cSim, const double *matA, const double *matB, const double *matC, size_t M, size_t K, size_t N)
 {
 	SystolicArraySim sysArraySim;
 
@@ -1385,29 +1450,29 @@ int SystolicArraySim::GemmTest(bool cSim, const double * matA, const double * ma
 
 	// Prepare output
 	std::vector<double> out(M * N);
-	for(size_t row = 0; row < (M / outMCnt) * outMCnt; row++)
+	for (size_t row = 0; row < (M / outMCnt) * outMCnt; row++)
 	{
-		for(size_t col = 0; col < (N / outNCnt) * outNCnt; col++)
+		for (size_t col = 0; col < (N / outNCnt) * outNCnt; col++)
 		{
 			out[row * N + col] = matC[row * N + col];
 		}
 	}
 
 	// Dispatch to SA
-	for(long sum = 0; sum + outKCnt <= K; sum += outKCnt)
+	for (long sum = 0; sum + outKCnt <= K; sum += outKCnt)
 	{
-		for(long outMPos = 0; outMPos + outMCnt <= M; outMPos += outMCnt)
+		for (long outMPos = 0; outMPos + outMCnt <= M; outMPos += outMCnt)
 		{
-			for(long outNPos = 0; outNPos + outNCnt <= N; outNPos += outNCnt)
+			for (long outNPos = 0; outNPos + outNCnt <= N; outNPos += outNCnt)
 			{
 				SystolicArraySim::job_t job = {
-						matA + outMPos * K + sum, K,
-						matB + sum * N + outNPos, N,
-						out.data() + outMPos * N + outNPos, N};
+					matA + outMPos * K + sum, K,
+					matB + sum * N + outNPos, N,
+					out.data() + outMPos * N + outNPos, N};
 
-				if(tileEn)
+				if (tileEn)
 				{
-					if(sysArraySim.DispatchTile(job))
+					if (sysArraySim.DispatchTile(job))
 					{
 						sasError("DispatchTile failed\n");
 						return -5;
@@ -1415,7 +1480,7 @@ int SystolicArraySim::GemmTest(bool cSim, const double * matA, const double * ma
 				}
 				else
 				{
-					if(sysArraySim.DispatchMma(job))
+					if (sysArraySim.DispatchMma(job))
 					{
 						sasError("DispatchMma failed\n");
 						return -5;
@@ -1425,9 +1490,9 @@ int SystolicArraySim::GemmTest(bool cSim, const double * matA, const double * ma
 		}
 	}
 
-	if(!cSim)
+	if (!cSim)
 	{
-		if(sysArraySim.ExecRtl(false, false))
+		if (sysArraySim.ExecRtl(false, false))
 		{
 			sasError("ExecRtl failed\n");
 			return -6;
@@ -1435,7 +1500,7 @@ int SystolicArraySim::GemmTest(bool cSim, const double * matA, const double * ma
 	}
 	else
 	{
-		if(sysArraySim.ExecCsim())
+		if (sysArraySim.ExecCsim())
 		{
 			sasError("ExecCsim failed\n");
 			return -6;
@@ -1443,13 +1508,13 @@ int SystolicArraySim::GemmTest(bool cSim, const double * matA, const double * ma
 	}
 
 	// Handle K-rest?
-	if(0 != (K % outKCnt))
+	if (0 != (K % outKCnt))
 	{
-		for(long row = 0; row < (M / outMCnt) * outMCnt; row++)
+		for (long row = 0; row < (M / outMCnt) * outMCnt; row++)
 		{
-			for(long col = 0; col < (N / outNCnt) * outNCnt; col++)
+			for (long col = 0; col < (N / outNCnt) * outNCnt; col++)
 			{
-				for(long sum = outKCnt * (K / outKCnt); sum < K; sum++)
+				for (long sum = outKCnt * (K / outKCnt); sum < K; sum++)
 				{
 					out.data()[row * N + col] += matA[row * K + sum] * matB[sum * N + col];
 				}
@@ -1459,13 +1524,13 @@ int SystolicArraySim::GemmTest(bool cSim, const double * matA, const double * ma
 
 	// Calculate expected result
 	std::vector<double> expected(M * N);
-	for(size_t row = 0; row < (M / outMCnt) * outMCnt; row++)
+	for (size_t row = 0; row < (M / outMCnt) * outMCnt; row++)
 	{
-		for(size_t col = 0; col < (N / outNCnt) * outNCnt; col++)
+		for (size_t col = 0; col < (N / outNCnt) * outNCnt; col++)
 		{
 			expected[row * N + col] = matC[row * N + col];
 
-			for(size_t sum = 0; sum < K; sum++)
+			for (size_t sum = 0; sum < K; sum++)
 			{
 				expected[row * N + col] += matA[row * K + sum] * matB[sum * N + col];
 			}
@@ -1473,7 +1538,7 @@ int SystolicArraySim::GemmTest(bool cSim, const double * matA, const double * ma
 	}
 
 	// Check if result correct
-	if(!resultCorrect(expected.data(), out.data(), M, N))
+	if (!resultCorrect(expected.data(), out.data(), M, N))
 	{
 		sasError("Output not correct\n");
 		return -1;
@@ -1486,11 +1551,11 @@ int SystolicArraySim::UnitTestNoFi(int exponentRange)
 {
 	unitTestExponentRange = exponentRange; // TODO: Having this global is ugly
 
-	for(size_t mCnt = 1; mCnt < 8; mCnt++)
+	for (size_t mCnt = 1; mCnt < 8; mCnt++)
 	{
-		for(size_t nCnt = 1; nCnt < 8; nCnt++)
+		for (size_t nCnt = 1; nCnt < 8; nCnt++)
 		{
-			if(MmaTest(mCnt, nCnt, false, false, false, false))
+			if (MmaTest(mCnt, nCnt, false, false, false, false))
 			{
 				sasError("rtl MmaTest (mCnt = %lu, nCnt = %lu) failed\n", mCnt, nCnt);
 				return -1;
@@ -1498,25 +1563,25 @@ int SystolicArraySim::UnitTestNoFi(int exponentRange)
 		}
 	}
 
-	if(MultiMmaTest(false))
+	if (MultiMmaTest(false))
 	{
 		sasError("rtl MultiMmaTest failed\n");
 		return -1;
 	}
 
-	if(TileTest(false))
+	if (TileTest(false))
 	{
 		sasError("rtl TileTest failed\n");
 		return -1;
 	}
 
-	for(size_t matrixTest = 0; matrixTest < 5; matrixTest++)
+	for (size_t matrixTest = 0; matrixTest < 5; matrixTest++)
 	{
 		std::shared_ptr<double[]> Arand = randomMatrix(14, 27, 27);
 		std::shared_ptr<double[]> Brand = randomMatrix(27, 27, 27);
 		std::shared_ptr<double[]> Crand = randomMatrix(14, 27, 27);
 
-		if(GemmTest(false, Arand.get(), Brand.get(), Crand.get(), 14, 27, 27))
+		if (GemmTest(false, Arand.get(), Brand.get(), Crand.get(), 14, 27, 27))
 		{
 			sasError("rtl GemmTest failed\n");
 			return -1;
@@ -1529,11 +1594,11 @@ int SystolicArraySim::UnitTestNoFi(int exponentRange)
 int SystolicArraySim::UnitTest()
 {
 	// Test cSim
-	for(size_t mCnt = 1; mCnt < 8; mCnt++)
+	for (size_t mCnt = 1; mCnt < 8; mCnt++)
 	{
-		for(size_t nCnt = 1; nCnt < 8; nCnt++)
+		for (size_t nCnt = 1; nCnt < 8; nCnt++)
 		{
-			if(MmaTest(mCnt, nCnt, true, false, false, false))
+			if (MmaTest(mCnt, nCnt, true, false, false, false))
 			{
 				sasError("cSim MmaTest failed (mCnt=%lu, nCnt=%lu)\n", mCnt, nCnt);
 				return -1;
@@ -1541,25 +1606,25 @@ int SystolicArraySim::UnitTest()
 		}
 	}
 
-	if(MultiMmaTest(true))
+	if (MultiMmaTest(true))
 	{
 		sasError("cSim MultiMmaTest failed\n");
 		return -1;
 	}
 
-	if(TileTest(true))
+	if (TileTest(true))
 	{
 		sasError("cSim TileTest failed\n");
 		return -1;
 	}
 
-	for(size_t matrixTest = 0; matrixTest < 5; matrixTest++)
+	for (size_t matrixTest = 0; matrixTest < 5; matrixTest++)
 	{
 		std::shared_ptr<double[]> Arand = randomMatrix(14, 27, 27);
 		std::shared_ptr<double[]> Brand = randomMatrix(27, 27, 27);
 		std::shared_ptr<double[]> Crand = randomMatrix(14, 27, 27);
 
-		if(GemmTest(true, Arand.get(), Brand.get(), Crand.get(), 14, 27, 27))
+		if (GemmTest(true, Arand.get(), Brand.get(), Crand.get(), 14, 27, 27))
 		{
 			sasError("cSim GemmTest failed\n");
 			return -1;
@@ -1568,13 +1633,13 @@ int SystolicArraySim::UnitTest()
 
 	// Test rtl
 	// Test stuff without faults
-	if(UnitTestNoFi(5))
+	if (UnitTestNoFi(5))
 	{
 		sasError("UnitTestNoFi failed (exp. Range %i)\n", unitTestExponentRange);
 		return -1;
 	}
 
-	if(UnitTestNoFi(100))
+	if (UnitTestNoFi(100))
 	{
 		sasError("UnitTestNoFi failed (exp. Range %i)\n", unitTestExponentRange);
 		return -1;
@@ -1583,11 +1648,11 @@ int SystolicArraySim::UnitTest()
 #ifdef NETLIST
 	// Test stuff with faults (and fast trans)
 	unitTestExponentRange = 10; // TODO: Having this global is ugly
-	for(size_t mCnt = 1; mCnt < 8; mCnt++)
+	for (size_t mCnt = 1; mCnt < 8; mCnt++)
 	{
-		for(size_t nCnt = 1; nCnt < 8; nCnt++)
+		for (size_t nCnt = 1; nCnt < 8; nCnt++)
 		{
-			if(MmaTest(mCnt, nCnt, false, true, true, true))
+			if (MmaTest(mCnt, nCnt, false, true, true, true))
 			{
 				sasError("rtl fast transient MmaTest failed (mCnt=%lu, nCnt=%lu)\n", mCnt, nCnt);
 				return -1;
@@ -1595,6 +1660,5 @@ int SystolicArraySim::UnitTest()
 		}
 	}
 #endif // NETLIST
-
 	return 0;
 }
