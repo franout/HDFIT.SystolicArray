@@ -1,0 +1,257 @@
+diff --git a/FMA.sv b/FMA.sv
+index b8c35c3..6c49cd5 100644
+--- a/FMA.sv
++++ b/FMA.sv
+@@ -62,12 +62,14 @@ module FMA (
+ 	logic [$clog2($bits(accMantNormalSigned_t))-1:0] accShift_stg2;
+ 	exponent_t							   expOut_stg2;
+ 	logic 							   isInf_stg2;
+-		
+-	`MSFF(acc_stg2, acc.Mant, clk);
+-	`MSFF(mulShift_stg2, mulShift, clk);
+-	`MSFF(accShift_stg2, accShift, clk);
+-	`MSFF(expOut_stg2, expOut, clk);
+-	`MSFF(isInf_stg2, isInf, clk);
++	
++
++
++	msFlipFlop #(.WIDTH($bits(acc_stg2))) msff_inst66(clk, acc.Mant, acc_stg2);
++	msFlipFlop #(.WIDTH($bits(mulShift_stg2))) msff_inst67(clk, mulShift, mulShift_stg2);
++	msFlipFlop #(.WIDTH($bits(accShift_stg2))) msff_inst68(clk, accShift, accShift_stg2);
++	msFlipFlop #(.WIDTH($bits(expOut_stg2))) msff_inst69(clk, expOut, expOut_stg2);
++	msFlipFlop #(.WIDTH($bits(isInf_stg2))) msff_inst70(clk, isInf, isInf_stg2);
+ 	
+ 	/* Forward 1. to 5. stage to wait for PPA ************************************************************/
+ 	
+@@ -78,11 +80,11 @@ module FMA (
+ 	exponent_t							   expOut_stg3;
+ 	logic 							   isInf_stg3;
+ 		
+-	`MSFF(acc_stg3, acc_stg2, clk);
+-	`MSFF(mulShift_stg3, mulShift_stg2, clk);
+-	`MSFF(accShift_stg3, accShift_stg2, clk);
+-	`MSFF(expOut_stg3, expOut_stg2, clk);
+-	`MSFF(isInf_stg3, isInf_stg2, clk);
++	msFlipFlop #(.WIDTH($bits(acc_stg3))) msff_inst81(clk, acc_stg2, acc_stg3);
++	msFlipFlop #(.WIDTH($bits(mulShift_stg3))) msff_inst82(clk, mulShift_stg2, mulShift_stg3);
++	msFlipFlop #(.WIDTH($bits(accShift_stg3))) msff_inst83(clk, accShift_stg2, accShift_stg3);
++	msFlipFlop #(.WIDTH($bits(expOut_stg3))) msff_inst84(clk, expOut_stg2, expOut_stg3);
++	msFlipFlop #(.WIDTH($bits(isInf_stg3))) msff_inst85(clk, isInf_stg2, isInf_stg3);
+ 	
+ 	// Stage 3. -> 4.
+ 	accMantNormalSigned_t 					   acc_stg4;
+@@ -91,11 +93,11 @@ module FMA (
+ 	exponent_t							   expOut_stg4;
+ 	logic 							   isInf_stg4;
+ 		
+-	`MSFF(acc_stg4, acc_stg3, clk);
+-	`MSFF(mulShift_stg4, mulShift_stg3, clk);
+-	`MSFF(accShift_stg4, accShift_stg3, clk);
+-	`MSFF(expOut_stg4, expOut_stg3, clk);
+-	`MSFF(isInf_stg4, isInf_stg3, clk);
++	msFlipFlop #(.WIDTH($bits(acc_stg4))) msff_inst94(clk, acc_stg3, acc_stg4);
++	msFlipFlop #(.WIDTH($bits(mulShift_stg4))) msff_inst95(clk, mulShift_stg3, mulShift_stg4);
++	msFlipFlop #(.WIDTH($bits(accShift_stg4))) msff_inst96(clk, accShift_stg3, accShift_stg4);
++	msFlipFlop #(.WIDTH($bits(expOut_stg4))) msff_inst97(clk, expOut_stg3, expOut_stg4);
++	msFlipFlop #(.WIDTH($bits(isInf_stg4))) msff_inst98(clk, isInf_stg3, isInf_stg4);
+ 	
+ 	// Stage 4. -> 5.
+ 	accMantNormalSigned_t 					   acc_stg5;
+@@ -103,12 +105,12 @@ module FMA (
+ 	logic [$clog2($bits(accMantNormalSigned_t))-1:0] accShift_stg5;
+ 	exponent_t							   expOut_stg5;
+ 	logic 							   isInf_stg5;
+-		
+-	`MSFF(acc_stg5, acc_stg4, clk);
+-	`MSFF(mulShift_stg5, mulShift_stg4, clk);
+-	`MSFF(accShift_stg5, accShift_stg4, clk);
+-	`MSFF(expOut_stg5, expOut_stg4, clk);
+-	`MSFF(isInf_stg5, isInf_stg4, clk);
++	
++	msFlipFlop #(.WIDTH($bits(acc_stg5))) msff_inst107(clk, acc_stg4, acc_stg5);
++	msFlipFlop #(.WIDTH($bits(mulShift_stg5))) msff_inst108(clk, mulShift_stg4, mulShift_stg5);
++	msFlipFlop #(.WIDTH($bits(accShift_stg5))) msff_inst109(clk, accShift_stg4, accShift_stg5);
++	msFlipFlop #(.WIDTH($bits(expOut_stg5))) msff_inst110(clk, expOut_stg4, expOut_stg5);
++	msFlipFlop #(.WIDTH($bits(isInf_stg5))) msff_inst111(clk, isInf_stg4, isInf_stg5);
+ 	
+ 	/* 5. stage ****************************************************************************************/
+ 	
+@@ -127,9 +129,9 @@ module FMA (
+ 	exponent_t expOut_stg6;
+ 	logic 							   isInf_stg6;
+       
+-	`MSFF(mantOut_stg6, mantOut, clk);
+-	`MSFF(expOut_stg6, expOut_stg5, clk);
+-	`MSFF(isInf_stg6, isInf_stg5, clk);
++	msFlipFlop #(.WIDTH($bits(mantOut_stg6))) msff_inst130(clk, mantOut, mantOut_stg6);
++	msFlipFlop #(.WIDTH($bits(expOut_stg6))) msff_inst131(clk, expOut_stg5, expOut_stg6);
++	msFlipFlop #(.WIDTH($bits(isInf_stg6))) msff_inst132(clk, isInf_stg5, isInf_stg6);
+ 	
+ 	/* 6. stage ****************************************************************************************/
+ 	
+diff --git a/Lzd.sv b/Lzd.sv
+index 48732d9..6b61d51 100644
+--- a/Lzd.sv
++++ b/Lzd.sv
+@@ -22,7 +22,7 @@
+ 
+ 
+ module Lzd #(
+-		parameter WIDTH
++		parameter WIDTH = 64 
+ 		)
+ 		(
+ 		input logic [WIDTH-1:0] in, 
+diff --git a/PartialProductArrayCSA.sv b/PartialProductArrayCSA.sv
+index 608d3d1..876889d 100644
+--- a/PartialProductArrayCSA.sv
++++ b/PartialProductArrayCSA.sv
+@@ -26,7 +26,7 @@
+  * 
+  * TODO: Add module documentation
+  */
+-module PartialProductArrayCSA #(parameter MULT_WIDTH)
++module PartialProductArrayCSA #(parameter MULT_WIDTH=64)
+ 		(
+ 		input logic 						 clk,
+ 		input logic signed [MULT_WIDTH-1:0] mul1,
+@@ -124,7 +124,8 @@ module PartialProductArrayCSA #(parameter MULT_WIDTH)
+ 	
+ 	generate
+ 		for(genvar row = 0; row < MULT_WIDTH / 3; row++) begin: csaFF
+-			`MSFF(csaRowsSum_stg2[row], csaRowsSum[row], clk);
++			//`MSFF(csaRowsSum_stg2[row], csaRowsSum[row], clk);
++			msFlipFlop #(.WIDTH($bits(csaRowsSum_stg2[row]))) csa_next_stage_ff(clk, csaRowsSum[row], csaRowsSum_stg2[row]);
+ 		end
+ 	endgenerate
+ 	
+@@ -197,7 +198,8 @@ module PartialProductArrayCSA #(parameter MULT_WIDTH)
+ 	
+ 	generate
+ 		for(genvar row = 0; row < MULT_WIDTH / 9; row++) begin: csa2FF
+-			`MSFF(csa2RowsSum_stg3[row], csa2RowsSum[row], clk);
++			//`MSFF(csa2RowsSum_stg3[row], csa2RowsSum[row], clk);
++			msFlipFlop #(.WIDTH($bits( csa2RowsSum_stg3[row]))) csa_next_stage2_ff(clk, csa2RowsSum[row], csa2RowsSum_stg3[row]);
+ 		end
+ 	endgenerate
+ 
+@@ -350,8 +352,10 @@ module PartialProductArrayCSA #(parameter MULT_WIDTH)
+ 	logic signed [MULT_WIDTH:0]  out1_stg4;
+ 	logic signed [MULT_WIDTH:0]  out2_stg4;
+ 	
+-	`MSFF(out1_stg4, {6'b100000, sum1, 4'd0}, clk); // Adding leading 1 missing from last row of ppa
+-	`MSFF(out2_stg4, {csa5Ps[96:91], csa5Ps[90], 43'd0, sum2[45:41]}, clk);
++	
++	msFlipFlop #(.WIDTH($bits(out1_stg4))) msff_inst353(clk, {6'b100000, sum1, 4'd0}, out1_stg4); // Adding leading 1 missing from last row of ppa
++	msFlipFlop #(.WIDTH($bits(out2_stg4))) msff_inst354(clk, {csa5Ps[96:91], csa5Ps[90], 43'd0, sum2[45:41]}, out2_stg4);
++	
+ 	
+ 	/*
+ 	always_comb begin
+@@ -363,9 +367,10 @@ module PartialProductArrayCSA #(parameter MULT_WIDTH)
+ 	
+ 	/* Stage 4 **************************************************************************************************************************/
+ 	// TODO: Output MSBs are too many. Can already see above that PPA exceeds 2 * MULT_WIDTH!
+-	logic signed [MULT_WIDTH:0] outSum = out1_stg4 + out2_stg4;
+-	
+-	`MSFF(out, outSum, clk);
++	logic signed [MULT_WIDTH:0] outSum; 
++	assign outSum = out1_stg4 + out2_stg4;
+ 	
++	//`MSFF(out, outSum, clk);
++	msFlipFlop #(.WIDTH($bits(out))) csa_next_stage4_ff(clk,outSum, out);
+ 		
+ endmodule
+diff --git a/ShiftCalc.sv b/ShiftCalc.sv
+index 3003881..71a70b9 100644
+--- a/ShiftCalc.sv
++++ b/ShiftCalc.sv
+@@ -27,7 +27,7 @@
+ // Note:
+ // 1) Only ">>" shifts will occur (mantissa will always be made smaller or stay same)
+ module ShiftCalc #(
+-		parameter MUL_WIDTH
++		parameter MUL_WIDTH = 64
+ 		)
+ 		(
+ 		input exponent_t  expMul0,
+@@ -42,8 +42,9 @@ module ShiftCalc #(
+ 	typedef logic signed [$bits(exponent_t) + 1:0] signedExtExp_t; // 1 bit for sign and another for overflow
+ 	
+ 	localparam signedExtExp_t bitsMultMant = signedExtExp_t'(2 * $bits(mulMantNormalSigned_t));
+-	localparam signedExtExp_t bitsAccMant = signedExtExp_t'($bits(accMantNormalSigned_t));
+ 	
++	localparam signedExtExp_t bitsAccMant = signedExtExp_t'($bits(accMantNormalSigned_t));
++
+ 	signedExtExp_t expMul;
+ 	logic 	      expMulZero;
+ 	signedExtExp_t mulShiftTmp;
+diff --git a/SystolicArray.sv b/SystolicArray.sv
+index e57eb3e..73570d8 100644
+--- a/SystolicArray.sv
++++ b/SystolicArray.sv
+@@ -67,9 +67,9 @@ module SystolicArray #(
+ 				// Next stage flip flops OR
+ 				// Set output port if it's the last column
+ 				if((K_MMA - 1 != k_mma) && (K_MMA - 2 != k_mma)) begin
+-					`MSFF(fmaAccOut[k_mma], fmaOut, fmaClock);
++					msFlipFlop #(.WIDTH($bits(fmaAccOut[k_mma]))) msff_inst70(fmaClock, fmaOut, fmaAccOut[k_mma]);
+ 				end else begin
+-					`MSFF(colOut[m_mma][k_mma % 2], fmaOut, fmaClock);
++					msFlipFlop #(.WIDTH($bits(colOut[m_mma][k_mma % 2]))) msff_inst72(fmaClock, fmaOut, colOut[m_mma][k_mma % 2]);
+ 				end
+ 			end
+ 		end
+@@ -91,11 +91,11 @@ module SystolicArray #(
+ 			
+ 			// Next stage flip flops
+ 			logic signed [$bits(accMantNormalSigned_t):0] sumUnnormalizedMant_stg2;
+-			`MSFF(sumUnnormalizedMant_stg2, sumUnnormalizedMant, ~clk);
++			msFlipFlop #(.WIDTH($bits(sumUnnormalizedMant_stg2))) msff_inst94(~clk, sumUnnormalizedMant, sumUnnormalizedMant_stg2);
+ 			
+ 			exponent_t sumUnnormalizedExp_stg2;
+-			`MSFF(sumUnnormalizedExp_stg2, sumUnnormalizedExp, ~clk);
+-			
++			msFlipFlop #(.WIDTH($bits(sumUnnormalizedExp_stg2))) msff_inst97(~clk, sumUnnormalizedExp, sumUnnormalizedExp_stg2);
++		
+ 			/* Stage 2 *******************************************************************************************************/
+ 			
+ 			Normalizer normalizer(
+diff --git a/flipFlop.sv b/flipFlop.sv
+index 41e94e7..6c14246 100644
+--- a/flipFlop.sv
++++ b/flipFlop.sv
+@@ -19,7 +19,7 @@
+  */
+ 
+ module flipFlop #(
+-			  parameter WIDTH
++			  parameter WIDTH = 64
+ 			  )
+    (
+     input logic 	     clk,
+diff --git a/msFlipFlop.sv b/msFlipFlop.sv
+index 57a72d3..fdaf1b9 100644
+--- a/msFlipFlop.sv
++++ b/msFlipFlop.sv
+@@ -19,7 +19,7 @@
+  */
+  
+ module msFlipFlop #(
+-		     parameter WIDTH,
++		     parameter WIDTH = 64,
+ 		     parameter INITIAL = 0
+ 		     )
+    (
+@@ -39,8 +39,10 @@ module msFlipFlop #(
+    
+    assign iclk = ~clk;
+    
+-   flipFlop #(.WIDTH(WIDTH)) dflop_instM (clk, in, masterOut);
++   flipFlop #(.WIDTH(WIDTH)) dflop_instM (clk, in, masterOut); 
+    flipFlop #(.WIDTH(WIDTH)) dflop_instS (iclk, masterOut, out);
+    
++   // my fi x
++   //flipFlop #(.WIDTH(WIDTH)) dflop_instM (clk, in, out);
+ endmodule
+ 
