@@ -4,3 +4,6 @@ netlist/
 netlist_fma/
 
 *.o
+
+*.so 
+*.a 

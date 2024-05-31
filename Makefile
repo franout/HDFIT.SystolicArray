@@ -15,6 +15,9 @@ CXX_FLAGS_VERILATED= -O3 \
 
 VERILATOR_TOP ?= /usr/share/verilator
 NETLIST_FAULT_INJECTOR_TOP ?= $(HOME)/HDFIT.NetlistFaultInjector
+TENSORFLOW_TOP ?= $(PWD)/tensorflow/tensorflow
+
+TENSORFLOW_INC = -I$(TENSORFLOW_TOP) -I$(TENSORFLOW_TOP)/tensorflow/lite/delegate -I$(TENSORFLOW_TOP)/tensorflow/lite/kernels/ -I$(TENSORFLOW_TOP)/tensorflow/lite/kernels/internal/
 
 VERILATOR_INC = -I$(VERILATOR_TOP)/include
 VERILATOR_SRC = $(VERILATOR_TOP)/include/verilated.cpp
@@ -73,7 +76,7 @@ $(DIR_SA_NETLIST)/SystolicArray_netlist.v: $(DIR_SA_NETLIST)/SystolicArray.v
 	cd $(DIR_SA_NETLIST) &&  yosys -s ../yosys.script && $(NETLIST_FAULT_INJECTOR_TOP)/netlistFaultInjector SystolicArray_netlist.v SystolicArray
 
 $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist.mk: $(DIR_SA_NETLIST)/SystolicArray_netlist.v
-	cd $(DIR_SA_NETLIST) && verilator $(VERILATOR_OPTIONS) -cc SystolicArray_netlist.v
+	cd $(DIR_SA_NETLIST) && verilator $(VERILATOR_OPTIONS) -lib-create SystolicArray -cc SystolicArray_netlist.v
 
 $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a: $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist.mk
 	cd $(DIR_SA_NETLIST)/obj_dir && make -j18 $(VERILATOR_MAKE_OPTIONS) -f VSystolicArray_netlist.mk
@@ -94,6 +97,9 @@ systolicArraySim.a : verilated.o systolicArraySim_netlist.o helpers.o netlistFau
 	ranlib systolicArraySim.a
 	./addLib.sh # adds VSystolicArray_netlist__ALL.a
 
+systolicArraySim4TensorFlow.a : tensorflow systolicArraySim.a
+	$(CXX) $(CXX_FLAGS) -Wno-undef -fPIC -shared -o systolicArraySim4TensorFlow.so  -I$(DIR_SYSTOLIC_ARRAY) $(TENSORFLOW_INC) $(VERILATOR_INC) systolicArraySim.a systolicArrayDelegateTflite.h systolicArrayDelegateTfliteIF.cpp  systolicArraySim.h  -lc -lpthread
+
 test : $(DIR_FMA)/VFMA__ALL.a $(DIR_SYSTOLIC_ARRAY)/VSystolicArray__ALL.a helpers.o systolicArraySim.o verilated.o main.cpp
 	$(CXX) $(CXX_FLAGS) -I$(DIR_FMA)  $(VERILATOR_INC) main.cpp -o test systolicArraySim.o \
 	$(DIR_SYSTOLIC_ARRAY)/VSystolicArray__ALL.a $(DIR_FMA)/VFMA__ALL.a helpers.o verilated.o
@@ -105,6 +111,9 @@ testNetlist: $(DIR_FMA_NETLIST)/obj_dir/VFMA_netlist__ALL.a $(DIR_SA_NETLIST)/ob
 openblas: systolicArraySim.a
 	cd openblas && make openblas
 
+tensorflow: 
+	cd tensorflow && make tensorflow
+
 clean :
-	rm -f -r $(DIR_SYSTOLIC_ARRAY) $(DIR_FMA) $(DIR_SA_NETLIST) $(DIR_FMA_NETLIST) ./test ./testNetlist ./mma.a ./*.o systolicArraySim.a
+	rm -f -r $(DIR_SYSTOLIC_ARRAY) $(DIR_FMA) $(DIR_SA_NETLIST) $(DIR_FMA_NETLIST) ./test ./testNetlist ./mma.a ./*.o systolicArraySim.a systolicArraySim4TensorFlow.a 
 	cd openblas && make clean
