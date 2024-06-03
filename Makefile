@@ -17,7 +17,9 @@ VERILATOR_TOP ?= /usr/share/verilator
 NETLIST_FAULT_INJECTOR_TOP ?= $(HOME)/HDFIT.NetlistFaultInjector
 TENSORFLOW_TOP ?= $(PWD)/tensorflow/tensorflow
 
+TENSORFLOW_DELEGATE_SRC_PATH=$(PWD)/tensorflow/SystolicArrayDelegate
 TENSORFLOW_INC = -I$(TENSORFLOW_TOP) -I$(TENSORFLOW_TOP)/tensorflow/lite/delegate -I$(TENSORFLOW_TOP)/tensorflow/lite/kernels/ -I$(TENSORFLOW_TOP)/tensorflow/lite/kernels/internal/
+TENSORFLOW_DIR_SHARED ?= /home/franout/.local/lib/python3.8/site-packages/tensorflow/lite/python/interpreter_wrapper/
 
 VERILATOR_INC = -I$(VERILATOR_TOP)/include
 VERILATOR_SRC = $(VERILATOR_TOP)/include/verilated.cpp
@@ -76,7 +78,7 @@ $(DIR_SA_NETLIST)/SystolicArray_netlist.v: $(DIR_SA_NETLIST)/SystolicArray.v
 	cd $(DIR_SA_NETLIST) &&  yosys -s ../yosys.script && $(NETLIST_FAULT_INJECTOR_TOP)/netlistFaultInjector SystolicArray_netlist.v SystolicArray
 
 $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist.mk: $(DIR_SA_NETLIST)/SystolicArray_netlist.v
-	cd $(DIR_SA_NETLIST) && verilator $(VERILATOR_OPTIONS) -lib-create SystolicArray -cc SystolicArray_netlist.v
+	cd $(DIR_SA_NETLIST) && verilator $(VERILATOR_OPTIONS) -cc SystolicArray_netlist.v
 
 $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a: $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist.mk
 	cd $(DIR_SA_NETLIST)/obj_dir && make -j18 $(VERILATOR_MAKE_OPTIONS) -f VSystolicArray_netlist.mk
@@ -96,9 +98,16 @@ systolicArraySim.a : verilated.o systolicArraySim_netlist.o helpers.o netlistFau
 	ar r systolicArraySim.a verilated.o systolicArraySim_netlist.o helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o
 	ranlib systolicArraySim.a
 	./addLib.sh # adds VSystolicArray_netlist__ALL.a
-
-systolicArraySim4TensorFlow.a : tensorflow systolicArraySim.a
-	$(CXX) $(CXX_FLAGS) -Wno-undef -fPIC -shared -o systolicArraySim4TensorFlow.so  -I$(DIR_SYSTOLIC_ARRAY) $(TENSORFLOW_INC) $(VERILATOR_INC) systolicArraySim.a systolicArrayDelegateTflite.h systolicArrayDelegateTfliteIF.cpp  systolicArraySim.h  -lc -lpthread
+#TODO optimize using shared library of tensorflow
+systolicArraySim4TensorFlow.a : tensorflow  $(TENSORFLOW_DELEGATE_SRC_PATH)/systolicArrayDelegateTflite.h $(TENSORFLOW_DELEGATE_SRC_PATH)/systolicArrayDelegateTfLite.cpp $(TENSORFLOW_DELEGATE_SRC_PATH)/systolicArrayDelegateTfliteIF.cpp   $(TENSORFLOW_DELEGATE_SRC_PATH)/FaultInjector.cpp $(TENSORFLOW_DELEGATE_SRC_PATH)/FaultInjector.h  verilated.o systolicArraySim_netlist.o helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a
+	$(CXX) $(CXX_FLAGS) -Wno-undef -fPIC   -Wl,-soname,systolicArraySim4TensorFlow.so -shared  -I./  $(TENSORFLOW_INC) $(VERILATOR_INC)  -L$(TENSORFLOW_DIR_SHARED)   \
+	$(TENSORFLOW_DELEGATE_SRC_PATH)/systolicArrayDelegateTflite.h $(TENSORFLOW_DELEGATE_SRC_PATH)/systolicArrayDelegateTfLite.cpp \
+	$(TENSORFLOW_DELEGATE_SRC_PATH)/systolicArrayDelegateTfliteIF.cpp  $(TENSORFLOW_TOP)/tensorflow/lite/util.cc \
+	$(TENSORFLOW_DELEGATE_SRC_PATH)/FaultInjector.cpp $(TENSORFLOW_DELEGATE_SRC_PATH)/FaultInjector.h \
+	$(TENSORFLOW_TOP)/tensorflow/lite/delegates/utils.cc $(TENSORFLOW_TOP)/tensorflow/lite/c/common.c  \
+	$(DIR_SA_NETLIST)/obj_dir/verilated.o systolicArraySim_netlist.o helpers.o netlistFaultInjector.o SystolicArrayFiSignals.o $(DIR_SA_NETLIST)/obj_dir/verilated_threads.o \
+	-Wl,--whole-archive  $(DIR_SA_NETLIST)/obj_dir/VSystolicArray_netlist__ALL.a  -Wl,--no-whole-archive \
+	-o systolicArraySim4TensorFlow.so
 
 test : $(DIR_FMA)/VFMA__ALL.a $(DIR_SYSTOLIC_ARRAY)/VSystolicArray__ALL.a helpers.o systolicArraySim.o verilated.o main.cpp
 	$(CXX) $(CXX_FLAGS) -I$(DIR_FMA)  $(VERILATOR_INC) main.cpp -o test systolicArraySim.o \
