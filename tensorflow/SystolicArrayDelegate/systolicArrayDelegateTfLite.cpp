@@ -87,8 +87,10 @@ namespace tflite
         LOG("[DELEGATE LOG] --- is the node supported by the delegate?\n");
         // Only supports 2D convolutions
         if (kTfLiteBuiltinDepthwiseConv2d != registration->builtin_code &&
-            kTfLiteBuiltinConv2d != registration->builtin_code)
+            kTfLiteBuiltinConv2d != registration->builtin_code) {
+          LOG("[DELEGATE LOG] --- It seems not!\n");
           return false;
+            }
         // This delegate only supports float32 types.
         for (int i = 0; i < node->inputs->size; ++i)
         {
@@ -96,7 +98,7 @@ namespace tflite
           if (tensor.type != kTfLiteFloat32)
             return false;
         }
-        LOG("[DELEGATE LOG] --- It seems so\n");
+        LOG("[DELEGATE LOG] --- It seems so :) \n");
         return true;
       }
 
@@ -237,7 +239,7 @@ TfLiteRegistration GetDelegateKernelRegistration(
 
   void DeleteSystolicArrayDelegate(TfLiteDelegate *delegate)
   {
-    if (!delegate)
+   if (!delegate)
       return;
     SimpleDelegateInterface *simple_delegate =
         reinterpret_cast<SimpleDelegateInterface *>(delegate->data_);

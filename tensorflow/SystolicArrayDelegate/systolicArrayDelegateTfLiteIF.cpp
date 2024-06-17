@@ -60,7 +60,8 @@ extern "C" {
 
 
 size_t getTotalFaultPlacement(void)   {
-    return 0; //SystolicArraySim::getTotalFaultPlacement();
+  // to be implemented 
+    return 2; //SystolicArraySim::getTotalFaultPlacement();
 }
 
 bool SetInjectionPoint(uint32_t index)   {
